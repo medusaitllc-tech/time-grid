@@ -1,0 +1,151 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// Note that some adapters may set a maximum length for the String type by default, please ensure your strings are long
+// enough when changing adapters.
+// See https://www.prisma.io/docs/orm/reference/prisma-schema-reference#string for more information
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Session {
+  id            String    @id
+  shop          String
+  state         String
+  isOnline      Boolean   @default(false)
+  scope         String?
+  expires       DateTime?
+  accessToken   String
+  userId        BigInt?
+  firstName     String?
+  lastName      String?
+  email         String?
+  accountOwner  Boolean   @default(false)
+  locale        String?
+  collaborator  Boolean?  @default(false)
+  emailVerified Boolean?  @default(false)
+}
+
+model Store {
+  id                BigInt      @id @default(autoincrement())
+  shop              String      @unique @db.VarChar(255) // Shopify shop domain
+  name              String?     @db.VarChar(255) // Store name
+  email             String?     @db.VarChar(255) // Store owner email
+  domain            String?     @db.VarChar(255) // Primary domain
+  country           String?     @db.VarChar(100) // Store country
+  currency          String?     @db.VarChar(10) // Store currency
+  timezone          String?     @db.VarChar(100) // Store timezone
+  planName          String?     @db.VarChar(100) // Shopify plan name
+  isActive          Boolean     @default(true) // Whether store is active
+  installedAt       DateTime    @default(now()) // When app was installed
+  uninstalledAt     DateTime? // When app was uninstalled
+  createdAt         DateTime    @default(now())
+  updatedAt         DateTime    @updatedAt
+  employees         Employee[] // Relation to employees
+  settings          Settings? // Relation to settings
+  services          Service[] // Relation to services
+  
+  @@index([shop])
+  @@index([isActive])
+  @@index([installedAt])
+}
+
+model Settings {
+  id                BigInt    @id @default(autoincrement())
+  shop              String    @db.VarChar(255) // Shop domain for quick lookups
+  storeId           BigInt    @unique // Foreign key to Store
+  store             Store     @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  workingHoursStart String    @default("09:00") @db.VarChar(5) // Start time (HH:MM format)
+  workingHoursEnd   String    @default("17:00") @db.VarChar(5) // End time (HH:MM format)
+  timeSlotSize      Int       @default(30) // Time slot size in minutes (used when slotType is "fixed")
+  slotType          String    @default("fixed") @db.VarChar(20) // "fixed" or "variable"
+  openDays          String    @default("1,2,3,4,5") @db.VarChar(50) // Comma-separated day numbers (0=Sunday, 1=Monday, etc.)
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  
+  @@index([shop])
+  @@index([storeId])
+}
+
+model Employee {
+  id                BigInt     @id @default(autoincrement())
+  name              String     @db.VarChar(255) // Employee name
+  avatarUrl         String?    @db.Text // Employee avatar/photo URL
+  shop              String     @db.VarChar(255) // Shop domain for quick lookups
+  storeId           BigInt // Foreign key to Store
+  store             Store      @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  serviceIds        Json?      // Array of service IDs this employee can provide
+  isActive          Boolean    @default(true) // Whether employee is active
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
+  schedules         Schedule[] // Relation to schedules
+  
+  @@index([shop])
+  @@index([storeId])
+  @@index([isActive])
+}
+
+model Schedule {
+  id                BigInt    @id @default(autoincrement())
+  employeeId        BigInt
+  employee          Employee  @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  shop              String    @db.VarChar(255) // Shop domain for quick lookups
+  date              DateTime  @db.Date // The date for this schedule
+  slots             Json      // Array of slot objects: [{startTime, endTime, isAvailable, bookingId}]
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  
+  @@unique([employeeId, date])
+  @@index([employeeId])
+  @@index([shop])
+  @@index([date])
+  @@index([employeeId, date])
+}
+
+model Service {
+  id                BigInt    @id @default(autoincrement())
+  productId         String    @db.VarChar(255) // Shopify product ID
+  productTitle      String    @db.VarChar(255) // Product title
+  variantId         String?   @db.VarChar(255) // Shopify variant ID (if specific variant)
+  variantTitle      String?   @db.VarChar(255) // Variant title
+  imageUrl          String?   @db.Text // Product or variant image URL
+  duration          Int       // Duration in minutes
+  shop              String    @db.VarChar(255) // Shop domain for quick lookups
+  storeId           BigInt    // Foreign key to Store
+  store             Store     @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  isActive          Boolean   @default(true) // Whether service is active
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  
+  @@unique([productId, variantId, shop])
+  @@index([shop])
+  @@index([storeId])
+  @@index([productId])
+  @@index([isActive])
+}
+
+model Subscription {
+  id                BigInt    @id @default(autoincrement())
+  shop              String    @db.VarChar(255)
+  subscriptionId    String    @unique @db.VarChar(255) // Shopify subscription ID
+  planName          String    @db.VarChar(50) // "Basic" or "Premium"
+  amount            Float     // Subscription price
+  status            String    @db.VarChar(50) // "ACTIVE", "CANCELLED", "EXPIRED", etc.
+  isTest            Boolean   @default(false) // Whether this is a test charge
+  confirmationUrl   String?   @db.Text // Shopify confirmation URL
+  chargeId          String?   @db.VarChar(255) // Charge ID from confirmation
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  activatedAt       DateTime? // When the subscription was activated
+  cancelledAt       DateTime? // When the subscription was cancelled
+  
+  @@index([shop])
+  @@index([subscriptionId])
+  @@index([status])
+  @@index([createdAt])
+}

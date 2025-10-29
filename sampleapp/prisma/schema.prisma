@@ -1,0 +1,70 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// Note that some adapters may set a maximum length for the String type by default, please ensure your strings are long
+// enough when changing adapters.
+// See https://www.prisma.io/docs/orm/reference/prisma-schema-reference#string for more information
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+  shadowDatabaseUrl = env("SHADOW_DATABASE_URL")
+}
+
+model Session {
+  id            String    @id
+  shop          String
+  state         String
+  isOnline      Boolean   @default(false)
+  scope         String?
+  expires       DateTime?
+  accessToken   String
+  userId        BigInt?
+  firstName     String?
+  lastName      String?
+  email         String?
+  accountOwner  Boolean   @default(false)
+  locale        String?
+  collaborator  Boolean?  @default(false)
+  emailVerified Boolean?  @default(false)
+}
+
+model GlamifyLog {
+  id                  String        @id @default(cuid())
+  shop                String        @db.VarChar(255)
+  productId           String        @db.VarChar(255)
+  productName         String        @db.VarChar(500)
+  generationDuration  Int           // Duration in milliseconds
+  imageWidth          Int?          // Generated image width in pixels
+  imageHeight         Int?          // Generated image height in pixels
+  action              String        @db.VarChar(20) // "generate", "add", or "replace"
+  createdAt           DateTime      @default(now())
+  
+  @@index([shop])
+  @@index([createdAt])
+  @@index([action])
+}
+
+model Subscription {
+  id                String    @id @default(cuid())
+  shop              String    @db.VarChar(255)
+  subscriptionId    String    @unique @db.VarChar(255) // Shopify subscription ID
+  planName          String    @db.VarChar(50) // "Basic" or "Premium"
+  amount            Float     // Subscription price
+  status            String    @db.VarChar(50) // "ACTIVE", "CANCELLED", "EXPIRED", etc.
+  isTest            Boolean   @default(false) // Whether this is a test charge
+  confirmationUrl   String?   @db.Text // Shopify confirmation URL
+  chargeId          String?   @db.VarChar(255) // Charge ID from confirmation
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  activatedAt       DateTime? // When the subscription was activated
+  cancelledAt       DateTime? // When the subscription was cancelled
+  
+  @@index([shop])
+  @@index([subscriptionId])
+  @@index([status])
+  @@index([createdAt])
+}

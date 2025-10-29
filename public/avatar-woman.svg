@@ -1,0 +1,31 @@
+<svg width="200" height="200" viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
+  <!-- Background circle -->
+  <circle cx="100" cy="100" r="100" fill="#E91E63"/>
+  
+  <!-- Head -->
+  <circle cx="100" cy="75" r="35" fill="#FDB797"/>
+  
+  <!-- Body -->
+  <path d="M 100 110 Q 70 110 60 140 L 60 200 L 140 200 L 140 140 Q 130 110 100 110 Z" fill="#9C27B0"/>
+  
+  <!-- Neck -->
+  <rect x="90" y="105" width="20" height="15" fill="#FDB797"/>
+  
+  <!-- Hair -->
+  <ellipse cx="100" cy="55" rx="40" ry="30" fill="#5D4037"/>
+  <path d="M 60 70 Q 60 45 100 40 Q 140 45 140 70 L 140 80 Q 140 55 100 50 Q 60 55 60 80 Z" fill="#5D4037"/>
+  
+  <!-- Eyes -->
+  <circle cx="88" cy="72" r="3" fill="#2C3E50"/>
+  <circle cx="112" cy="72" r="3" fill="#2C3E50"/>
+  
+  <!-- Eyelashes -->
+  <path d="M 85 70 L 83 68" stroke="#2C3E50" stroke-width="1.5" stroke-linecap="round"/>
+  <path d="M 115 70 L 117 68" stroke="#2C3E50" stroke-width="1.5" stroke-linecap="round"/>
+  
+  <!-- Smile -->
+  <path d="M 85 85 Q 100 92 115 85" stroke="#2C3E50" stroke-width="2" fill="none" stroke-linecap="round"/>
+  
+  <!-- Lipstick -->
+  <ellipse cx="100" cy="88" rx="8" ry="3" fill="#E91E63" opacity="0.3"/>
+</svg>
