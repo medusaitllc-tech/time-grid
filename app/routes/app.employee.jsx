@@ -38,13 +38,13 @@ export const loader = async ({ request }) => {
     },
   });
 
-  // Get schedules for the current month
+  // Get schedules for current month and adjacent months (for navigation)
   const schedules = await prisma.schedule.findMany({
     where: {
       shop,
       date: {
-        gte: startDate,
-        lte: endDate,
+        gte: new Date(year, month - 1, 1), // Previous month
+        lte: new Date(year, month + 2, 0),  // Next month end
       },
     },
   });
@@ -123,17 +123,31 @@ export const action = async ({ request }) => {
 
   if (actionType === "saveSchedule") {
     const employeeId = formData.get("employeeId");
-    const date = new Date(formData.get("date"));
+    const dateStr = formData.get("date"); // Expected: "YYYY-MM-DD"
     const slotsJson = formData.get("slots");
     const slots = JSON.parse(slotsJson);
 
-    console.log("Saving schedule:", { employeeId, date, slotsCount: slots.length });
+    console.log("Saving schedule - received:", { employeeId, dateStr, slotsCount: slots.length });
 
-    // Normalize date to start of day
-    date.setHours(0, 0, 0, 0);
+    // Validate date format (YYYY-MM-DD)
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+      console.error("Invalid date format:", dateStr);
+      return { success: false, error: "Invalid date format. Expected YYYY-MM-DD" };
+    }
+
+    // Parse as UTC date to avoid timezone shift
+    const [year, month, day] = dateStr.split('-').map(Number);
+    const date = new Date(Date.UTC(year, month - 1, day)); // UTC date at midnight
+    
+    console.log("Date parsing:", {
+      input: dateStr,
+      parsed: { year, month, day },
+      dateObject: date,
+      toISOString: date.toISOString(),
+    });
 
     // Upsert schedule
-    await prisma.schedule.upsert({
+    const result = await prisma.schedule.upsert({
       where: {
         employeeId_date: {
           employeeId,
@@ -152,7 +166,13 @@ export const action = async ({ request }) => {
       },
     });
 
-    return { success: true, action: "saveSchedule" };
+    console.log("Schedule saved - result:", {
+      id: result.id,
+      date: result.date,
+      dateISO: new Date(result.date).toISOString(),
+    });
+
+    return { success: true, action: "saveSchedule", date: dateStr };
   }
 
   if (actionType === "duplicateSchedule") {
@@ -163,12 +183,15 @@ export const action = async ({ request }) => {
     // Create or update schedules for all target dates
     const results = await Promise.all(
       targetDates.map(dateStr => {
-        const dateTime = new Date(dateStr + 'T00:00:00.000Z');
+        // Parse as UTC date to avoid timezone shift
+        const [year, month, day] = dateStr.split('-').map(Number);
+        const date = new Date(Date.UTC(year, month - 1, day));
+        
         return prisma.schedule.upsert({
           where: {
             employeeId_date: {
               employeeId,
-              date: dateTime,
+              date,
             },
           },
           update: {
@@ -178,7 +201,7 @@ export const action = async ({ request }) => {
           create: {
             employeeId,
             shop,
-            date: dateTime,
+            date,
             slots,
           },
         });
@@ -238,6 +261,13 @@ export default function EmployeePage() {
   // Default slot size for schedule display (15 minutes)
   const SLOT_SIZE_MINUTES = 15;
 
+  // Auto-select first employee on initial load
+  useEffect(() => {
+    if (!selectedEmployee && employees.length > 0) {
+      setSelectedEmployee(employees[0]);
+    }
+  }, [employees, selectedEmployee]);
+
   // Update selected employee when data changes
   useEffect(() => {
     if (selectedEmployee && employees.length > 0) {
@@ -262,11 +292,25 @@ export default function EmployeePage() {
     }
   }, [fetcher.state, fetcher.data]);
 
+  // Revalidate after schedule save to ensure schedules are loaded for other months
+  useEffect(() => {
+    if (fetcher.state === "idle" && fetcher.data?.success && fetcher.data?.action === "saveSchedule") {
+      revalidator.revalidate();
+    }
+  }, [fetcher.state, fetcher.data]);
+
   // Helper to find schedule for a specific date and employee
   const getScheduleForDate = (date, employeeId) => {
     if (!employeeId) return null;
-    const dateStr = date.toISOString().split('T')[0];
+    
+    // Format local date as YYYY-MM-DD without timezone conversion
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    const dateStr = `${year}-${month}-${day}`;
+    
     return schedules.find(s => {
+      // Schedule dates are stored in UTC, extract just the date part
       const scheduleDate = new Date(s.date).toISOString().split('T')[0];
       return s.employeeId.toString() === employeeId.toString() && scheduleDate === dateStr;
     });
@@ -584,11 +628,17 @@ export default function EmployeePage() {
     const allSlots = generateTimeSlots(selectedDate);
     const slotsToSave = selectedSlots.map(index => allSlots[index]);
 
+    // Format date as YYYY-MM-DD to avoid timezone issues
+    const year = selectedDate.getFullYear();
+    const month = String(selectedDate.getMonth() + 1).padStart(2, '0');
+    const day = String(selectedDate.getDate()).padStart(2, '0');
+    const dateStr = `${year}-${month}-${day}`;
+
     fetcher.submit(
       {
         action: "saveSchedule",
         employeeId: selectedEmployee.id,
-        date: selectedDate.toISOString(),
+        date: dateStr,
         slots: JSON.stringify(slotsToSave),
       },
       { method: "POST" }
@@ -651,20 +701,28 @@ export default function EmployeePage() {
   const currentMonth = currentDate.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
 
   return (
-    <s-page heading="Employee Schedule">
+    <s-page heading="Employee assignments and availability">
       <s-query-container>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 2fr", gap: "16px" }}>
+        <s-grid
+          gridTemplateColumns="@container (inline-size > 768px) 1fr 2fr, 1fr"
+          gap="base"
+          alignItems="stretch"
+        >
           {/* Employee List Column (1/3 width on desktop, full width on mobile) */}
-          <div>
-          <div style={{ 
-            backgroundColor: "white", 
-            borderRadius: "12px", 
-            padding: "20px",
-            boxShadow: "0 1px 3px rgba(0, 0, 0, 0.1)",
-            height: "100%",
-            minHeight: "900px"
-          }}>
-          <s-grid gap="base">
+          <s-grid-item style={{ display: "flex", flexDirection: "column" }}>
+            <div
+              style={{
+                backgroundColor: "white",
+                borderRadius: "12px",
+                padding: "20px",
+                boxShadow: "0 1px 3px rgba(0, 0, 0, 0.1)",
+                display: "flex",
+                flexDirection: "column",
+                flex: 1,
+                height: "100%",
+              }}
+            >
+          <s-grid gap="base" style={{ flex: 1 }}>
             <s-grid gridTemplateColumns="1fr auto" alignItems="center">
               <s-heading>Employees</s-heading>
               <s-button commandFor="add-employee-modal" command="--show" variant="primary">
@@ -733,11 +791,11 @@ export default function EmployeePage() {
               </s-box>
             )}
           </s-grid>
-        </div>
-        </div>
+            </div>
+          </s-grid-item>
 
         {/* Monthly Schedule and Services Column (2/3 width on desktop, full width on mobile) */}
-        <div>
+          <s-grid-item>
           <s-grid gap="base">
           {/* Services Provided Section */}
           <s-section>
@@ -912,8 +970,8 @@ export default function EmployeePage() {
             <s-grid gap="base">
               <s-heading>
                 {selectedEmployee 
-                  ? `Schedule for ${selectedEmployee.name}` 
-                  : "Select an employee to view schedule"}
+                  ? `Availability for ${selectedEmployee.name}` 
+                  : "Select an employee to view availability"}
               </s-heading>
 
               {selectedEmployee && (
@@ -1092,8 +1150,8 @@ export default function EmployeePage() {
           </s-grid>
         </s-section>
         </s-grid>
-        </div>
-      </div>
+          </s-grid-item>
+        </s-grid>
       </s-query-container>
 
       {/* Add Employee Modal */}
@@ -1362,7 +1420,7 @@ export default function EmployeePage() {
                       variant="primary"
                       disabled={selectedSlots.length === 0}
                     >
-                      Save Schedule
+                      Save Availability
                     </s-button>
                   </s-stack>
                 </div>

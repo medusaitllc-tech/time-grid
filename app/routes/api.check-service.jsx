@@ -17,10 +17,12 @@ import prisma from "../db.server";
 export const loader = async ({ request }) => {
   const url = new URL(request.url);
   const productId = url.searchParams.get("productId");
+  const variantId = url.searchParams.get("variantId"); // Optional: for variant-specific services
   const shop = url.searchParams.get("shop");
 
   console.log('[API] /api/check-service - Request received:', {
     productId,
+    variantId,
     shop,
     origin: request.headers.get("origin"),
     method: request.method,
@@ -99,28 +101,52 @@ export const loader = async ({ request }) => {
       }
     }
 
-    // Extract numeric ID from GID format if needed
-    // GID format: gid://shopify/Product/8444945268933
-    // Numeric format: 8444945268933
+    // Extract numeric IDs from GID format if needed
+    // GID format: gid://shopify/Product/8444945268933 or gid://shopify/ProductVariant/45175235608773
     const numericProductId = productId.includes('gid://') 
       ? productId.split('/').pop() 
       : productId;
     
-    console.log('[API] /api/check-service - Searching for product:', {
+    const numericVariantId = variantId && variantId.includes('gid://') 
+      ? variantId.split('/').pop() 
+      : variantId;
+    
+    console.log('[API] /api/check-service - Searching for service:', {
       originalProductId: productId,
       numericProductId,
+      originalVariantId: variantId,
+      numericVariantId,
       shopDomain,
     });
 
-    // Try to find service by numeric ID or GID format
+    // Build query conditions
+    // Priority: 1. Exact variant match, 2. Product with no variant specified (product-level service)
+    const whereConditions = [];
+    
+    if (numericVariantId) {
+      // If variant ID provided, look for variant-specific service first
+      whereConditions.push(
+        { productId: numericProductId, variantId: numericVariantId, shop: shopDomain, isActive: true },
+        { productId: productId, variantId: numericVariantId, shop: shopDomain, isActive: true },
+        { productId: numericProductId, variantId: variantId, shop: shopDomain, isActive: true },
+      );
+    }
+    
+    // Also check for product-level service (no variant specified)
+    whereConditions.push(
+      { productId: numericProductId, variantId: null, shop: shopDomain, isActive: true },
+      { productId: productId, variantId: null, shop: shopDomain, isActive: true },
+      { productId: `gid://shopify/Product/${numericProductId}`, variantId: null, shop: shopDomain, isActive: true },
+    );
+
+    // Try to find service - variant-specific first, then product-level
     const service = await prisma.service.findFirst({
       where: {
-        OR: [
-          { productId: numericProductId, shop: shopDomain, isActive: true },
-          { productId: productId, shop: shopDomain, isActive: true },
-          { productId: `gid://shopify/Product/${numericProductId}`, shop: shopDomain, isActive: true },
-        ],
+        OR: whereConditions,
       },
+      orderBy: [
+        { variantId: 'desc' }, // Prioritize services with variantId (nulls last)
+      ],
     });
     
     console.log('[API] /api/check-service - Database query result:', service ? 'Found' : 'Not found');

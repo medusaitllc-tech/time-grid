@@ -58,16 +58,20 @@ model Store {
 }
 
 model Settings {
-  id                BigInt    @id @default(autoincrement())
-  shop              String    @db.VarChar(255) // Shop domain for quick lookups
-  storeId           BigInt    @unique // Foreign key to Store
-  store             Store     @relation(fields: [storeId], references: [id], onDelete: Cascade)
-  workingHoursStart String    @default("09:00") @db.VarChar(5) // Start time (HH:MM format)
-  workingHoursEnd   String    @default("17:00") @db.VarChar(5) // End time (HH:MM format)
-  openDays          String    @default("1,2,3,4,5") @db.VarChar(50) // Comma-separated day numbers (0=Sunday, 1=Monday, etc.)
-  useResources      Boolean   @default(false) // Whether to use resources for bookings
-  createdAt         DateTime  @default(now())
-  updatedAt         DateTime  @updatedAt
+  id                        BigInt    @id @default(autoincrement())
+  shop                      String    @db.VarChar(255) // Shop domain for quick lookups
+  storeId                   BigInt    @unique // Foreign key to Store
+  store                     Store     @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  workingHoursStart         String    @default("09:00") @db.VarChar(5) // Start time (HH:MM format)
+  workingHoursEnd           String    @default("17:00") @db.VarChar(5) // End time (HH:MM format)
+  openDays                  String    @default("1,2,3,4,5") @db.VarChar(50) // Comma-separated day numbers (0=Sunday, 1=Monday, etc.)
+  useResources              Boolean   @default(false) // Whether to use resources for bookings
+  limitBookingWindow        Boolean   @default(false) // Whether to limit how far in advance customers can book
+  bookingWindow             Int       @default(30) // Number of days in advance customers can book (when limitBookingWindow is true)
+  limitAppointments         Boolean   @default(false) // Whether to limit the number of displayed appointments
+  maxAppointmentsDisplayed  Int       @default(10) // Maximum number of appointments to display (when limitAppointments is true)
+  createdAt                 DateTime  @default(now())
+  updatedAt                 DateTime  @updatedAt
   
   @@index([shop])
   @@index([storeId])

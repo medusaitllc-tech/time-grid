@@ -46,81 +46,110 @@
       return;
     }
 
-    // Check if product is a service
-    console.log('[Widget] Checking if product is a service...', { productId, shop, appUrl });
-    
-    fetch(`${appUrl}/api/check-service?productId=${productId}&shop=${shop}`)
-      .then(response => {
-        console.log('[Widget] check-service response status:', response.status);
-        return response.json();
-      })
-      .then(data => {
-        console.log('[Widget] check-service response data:', data);
-        
-        if (!data.isService) {
-          console.log('[Widget] Product is not a service');
-          container.innerHTML = '<p style="color: #6d7175;">This product is not available for booking.</p>';
-          return;
-        }
-        
-        console.log('[Widget] Product IS a service, loading widget...', {
-          serviceId: data.serviceId,
-          duration: data.duration,
-          title: data.title
+    // Function to check and load service
+    // Can be called with either productId or variantId
+    function checkAndLoadService(currentVariantId) {
+      console.log('[Widget] Checking if product/variant is a service...', { productId, variantId: currentVariantId, shop, appUrl });
+      
+      // Always pass the main productId, and optionally the variantId
+      const url = `${appUrl}/api/check-service?productId=${productId}&shop=${shop}${currentVariantId ? `&variantId=${currentVariantId}` : ''}`;
+      fetch(url)
+        .then(response => {
+          console.log('[Widget] check-service response status:', response.status);
+          return response.json();
+        })
+        .then(data => {
+          console.log('[Widget] check-service response data:', data);
+          
+          if (!data.isService) {
+            console.log('[Widget] Product is not a service');
+            container.innerHTML = '<p style="color: #6d7175;">This product is not available for booking.</p>';
+            return;
+          }
+          
+          console.log('[Widget] Product IS a service, loading widget...', {
+            serviceId: data.serviceId,
+            duration: data.duration,
+            title: data.title
+          });
+          
+          // Load the booking widget
+          loadBookingWidget(data.serviceId, data.duration, data.title);
+        })
+        .catch(error => {
+          console.error('[Widget] Error checking service:', error);
+          container.innerHTML = '<p style="color: #c72e2e;">Unable to load booking calendar.</p>';
         });
-        
-        // Load the booking widget
-        loadBookingWidget(data.serviceId, data.duration, data.title);
-      })
-      .catch(error => {
-        console.error('[Widget] Error checking service:', error);
-        container.innerHTML = '<p style="color: #c72e2e;">Unable to load booking calendar.</p>';
-      });
+    }
+
+    // Initial load - check if there's a variant in the URL
+    const urlParams = new URLSearchParams(window.location.search);
+    const initialVariant = urlParams.get('variant');
+    checkAndLoadService(initialVariant || null);
+
+    // Listen for variant changes (multiple methods for theme compatibility)
+    
+    // Method 1: Custom variant:change event
+    document.addEventListener('variant:change', function(event) {
+      console.log('[Widget] Variant changed (custom event):', event.detail);
+      if (event.detail && event.detail.variant) {
+        const varId = event.detail.variant.id || event.detail.variant;
+        checkAndLoadService(varId);
+      }
+    });
+
+    // Method 2: Listen to product form changes
+    const productForms = document.querySelectorAll('form[action*="/cart/add"]');
+    productForms.forEach(function(form) {
+      const variantInput = form.querySelector('select[name="id"], input[name="id"]');
+      if (variantInput) {
+        variantInput.addEventListener('change', function(e) {
+          const newVariantId = e.target.value;
+          console.log('[Widget] Variant changed (form):', newVariantId);
+          checkAndLoadService(newVariantId || null);
+        });
+      }
+    });
+
+    // Method 3: Monitor URL changes (for themes that update URL parameters)
+    let lastVariantId = initialVariant;
+    setInterval(function() {
+      const urlParams = new URLSearchParams(window.location.search);
+      const variantParam = urlParams.get('variant');
+      if (variantParam !== lastVariantId) {
+        console.log('[Widget] Variant changed (URL):', variantParam);
+        lastVariantId = variantParam;
+        checkAndLoadService(variantParam || null);
+      }
+    }, 500);
 
     function loadBookingWidget(serviceId, duration, title) {
-      const today = new Date();
-      const dateStr = formatDate(today);
+      const contentId = `timegrid-content-${productId}`;
       
       container.innerHTML = `
         <div class="timegrid-widget">
           <h3>Book an Appointment</h3>
           <p class="timegrid-service-title">${title} (${duration} min)</p>
-          
-          <div class="timegrid-date-picker">
-            <button onclick="changeDate(-1)" class="timegrid-btn">← Previous</button>
-            <input type="date" id="timegrid-date-${productId}" value="${dateStr}" min="${dateStr}" onchange="loadAvailabilities()">
-            <button onclick="changeDate(1)" class="timegrid-btn">Next →</button>
-          </div>
 
-          <div id="timegrid-content-${productId}">
+          <div id="${contentId}">
             <div class="timegrid-loading">Loading available time slots...</div>
           </div>
         </div>
       `;
 
-      window.changeDate = function(days) {
-        const input = document.getElementById('timegrid-date-${productId}');
-        const current = new Date(input.value);
-        current.setDate(current.getDate() + days);
-        input.value = formatDate(current);
-        loadAvailabilities();
-      };
-
       window.loadAvailabilities = function() {
-        const dateInput = document.getElementById('timegrid-date-${productId}');
-        const content = document.getElementById('timegrid-content-${productId}');
+        const content = document.getElementById(contentId);
         
-        if (!dateInput || !content) {
+        if (!content) {
           console.error('[Widget] DOM elements not found');
           return;
         }
         
-        const date = dateInput.value;
         content.innerHTML = '<div class="timegrid-loading">Loading...</div>';
 
-        console.log('[Widget] Loading availabilities...', { serviceId, date, appUrl });
+        console.log('[Widget] Loading availabilities...', { serviceId, shop, appUrl });
 
-        fetch(`${appUrl}/api/availabilities?serviceId=${serviceId}&date=${date}`)
+        fetch(`${appUrl}/api/availabilities?serviceId=${serviceId}&shop=${shop}`)
           .then(response => {
             console.log('[Widget] availabilities response status:', response.status);
             return response.json();
@@ -136,28 +165,56 @@
 
             if (data.message || !data.availabilities || data.availabilities.length === 0) {
               console.log('[Widget] No availabilities:', data.message || 'Empty array');
-              content.innerHTML = `<div class="timegrid-empty">${data.message || 'No available time slots for this date.'}</div>`;
+              content.innerHTML = `<div class="timegrid-empty">${data.message || 'No available time slots.'}</div>`;
               return;
             }
 
             console.log('[Widget] Found availabilities:', data.availabilities.length);
+            console.log('[Widget] Total availabilities:', data.totalAvailabilities);
+            console.log('[Widget] Limit applied by backend:', data.limitApplied);
 
-            const slotsHTML = data.availabilities.map(slot => `
-              <div class="timegrid-slot" onclick="selectSlot('${slot.startTime}', '${slot.endTime}')">
-                <div>
-                  <div class="timegrid-slot-time">${slot.startTime} - ${slot.endTime}</div>
-                  ${slot.employees && slot.employees.length > 0 ? 
-                    `<div class="timegrid-slot-staff">Staff: ${slot.employees.map(e => e.name).join(', ')}</div>` 
-                    : ''}
+            // Backend already filters past appointments, so we can use the data directly
+            const allAvailabilities = data.availabilities;
+            
+            // Check if no slots available
+            if (allAvailabilities.length === 0) {
+              content.innerHTML = `<div class="timegrid-empty">No upcoming time slots available.</div>`;
+              return;
+            }
+
+            const totalFromBackend = data.totalAvailabilities || allAvailabilities.length;
+            const initialLimit = 10;
+            let currentLimit = initialLimit;
+            
+            function renderSlots() {
+              const visibleSlots = allAvailabilities.slice(0, currentLimit);
+              const hasMore = allAvailabilities.length > currentLimit;
+              
+              const slotsHTML = visibleSlots.map(slot => `
+                <div class="timegrid-slot" onclick="selectSlot('${slot.date}', '${slot.startTime}', '${slot.endTime}')">
+                  <div>
+                    <div class="timegrid-slot-time">${slot.date} at ${slot.startTime} - ${slot.endTime}</div>
+                    ${slot.employees && slot.employees.length > 0 ? 
+                      `<div class="timegrid-slot-staff">Staff: ${slot.employees.map(e => e.name).join(', ')}</div>` 
+                      : ''}
+                  </div>
+                  <div class="timegrid-slot-badge">Available</div>
                 </div>
-                <div class="timegrid-slot-badge">Available</div>
-              </div>
-            `).join('');
+              `).join('');
 
-            content.innerHTML = `
-              <div class="timegrid-count">${data.availabilities.length} time slot(s) available</div>
-              <div class="timegrid-slots">${slotsHTML}</div>
-            `;
+              content.innerHTML = `
+                <div class="timegrid-count">${allAvailabilities.length} time slot(s) available</div>
+                <div class="timegrid-slots">${slotsHTML}</div>
+                ${hasMore ? `<button class="timegrid-more-btn" onclick="showMoreSlots()">More (${allAvailabilities.length - currentLimit} remaining)</button>` : ''}
+              `;
+            }
+            
+            window.showMoreSlots = function() {
+              currentLimit += 10;
+              renderSlots();
+            };
+            
+            renderSlots();
           })
           .catch(error => {
             console.error('[Widget] Error loading availabilities:', error);
@@ -165,11 +222,9 @@
           });
       };
 
-      window.selectSlot = function(startTime, endTime) {
-        const dateInput = document.getElementById('timegrid-date-${productId}');
-        const date = dateInput ? dateInput.value : '';
+      window.selectSlot = function(date, startTime, endTime) {
         console.log('[Widget] Slot selected:', { date, startTime, endTime });
-        alert(`You selected: ${date} at ${startTime} - ${endTime}\\n\\nBooking functionality coming soon!`);
+        alert(`You selected: ${date} at ${startTime} - ${endTime}\n\nBooking functionality coming soon!`);
       };
 
       // Wait for DOM to be ready before loading availabilities
@@ -209,29 +264,6 @@
     color: #6d7175;
     font-size: 14px;
     margin: 0 0 16px 0;
-  }
-  .timegrid-date-picker {
-    display: flex;
-    gap: 8px;
-    margin-bottom: 16px;
-  }
-  .timegrid-btn {
-    padding: 8px 16px;
-    border: 1px solid #c4cdd5;
-    border-radius: 4px;
-    background: #fff;
-    cursor: pointer;
-    font-size: 14px;
-  }
-  .timegrid-btn:hover {
-    background: #f6f6f7;
-  }
-  .timegrid-date-picker input {
-    flex: 1;
-    padding: 8px 12px;
-    border: 1px solid #c4cdd5;
-    border-radius: 4px;
-    font-size: 14px;
   }
   .timegrid-loading,
   .timegrid-empty,
@@ -285,5 +317,21 @@
     border-radius: 12px;
     font-size: 12px;
     font-weight: 500;
+  }
+  .timegrid-more-btn {
+    width: 100%;
+    margin-top: 12px;
+    padding: 10px 16px;
+    border: 1px solid #c4cdd5;
+    border-radius: 4px;
+    background: #fff;
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 500;
+    color: #2c6ecb;
+  }
+  .timegrid-more-btn:hover {
+    background: #f6f8fa;
+    border-color: #2c6ecb;
   }
 </style>

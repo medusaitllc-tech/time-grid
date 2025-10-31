@@ -21,6 +21,10 @@ export const loader = async ({ request }) => {
     workingHoursEnd: "17:00",
     openDays: "1,2,3,4,5",
     useResources: false,
+    limitBookingWindow: false,
+    bookingWindow: 30,
+    limitAppointments: false,
+    maxAppointmentsDisplayed: 10,
   };
 
   return { settings, hasSettings: !!store?.settings };
@@ -35,8 +39,12 @@ export const action = async ({ request }) => {
   const workingHoursEnd = formData.get("workingHoursEnd");
   const openDays = formData.get("openDays");
   const useResources = formData.get("useResources") === "true";
+  const limitBookingWindow = formData.get("limitBookingWindow") === "true";
+  const bookingWindow = parseInt(formData.get("bookingWindow") || "30", 10);
+  const limitAppointments = formData.get("limitAppointments") === "true";
+  const maxAppointmentsDisplayed = parseInt(formData.get("maxAppointmentsDisplayed") || "10", 10);
 
-  console.log("Saving settings:", { workingHoursStart, workingHoursEnd, openDays, useResources });
+  console.log("Saving settings:", { workingHoursStart, workingHoursEnd, openDays, useResources, limitBookingWindow, bookingWindow, limitAppointments, maxAppointmentsDisplayed });
 
   // Get or create store
   let store = await prisma.store.findUnique({
@@ -60,6 +68,10 @@ export const action = async ({ request }) => {
       workingHoursEnd: workingHoursEnd.toString(),
       openDays: openDays.toString(),
       useResources,
+      limitBookingWindow,
+      bookingWindow,
+      limitAppointments,
+      maxAppointmentsDisplayed,
       updatedAt: new Date(),
     },
     create: {
@@ -69,6 +81,10 @@ export const action = async ({ request }) => {
       workingHoursEnd: workingHoursEnd.toString(),
       openDays: openDays.toString(),
       useResources,
+      limitBookingWindow,
+      bookingWindow,
+      limitAppointments,
+      maxAppointmentsDisplayed,
     },
   });
 
@@ -82,6 +98,10 @@ export default function SettingsPage() {
   const [workingHoursStart, setWorkingHoursStart] = useState(settings.workingHoursStart);
   const [workingHoursEnd, setWorkingHoursEnd] = useState(settings.workingHoursEnd);
   const [useResources, setUseResources] = useState(settings.useResources || false);
+  const [limitBookingWindow, setLimitBookingWindow] = useState(settings.limitBookingWindow || false);
+  const [bookingWindow, setBookingWindow] = useState(settings.bookingWindow || 30);
+  const [limitAppointments, setLimitAppointments] = useState(settings.limitAppointments || false);
+  const [maxAppointmentsDisplayed, setMaxAppointmentsDisplayed] = useState(settings.maxAppointmentsDisplayed || 10);
   const [selectedDays, setSelectedDays] = useState(
     settings.openDays.split(",").map(Number)
   );
@@ -123,6 +143,10 @@ export default function SettingsPage() {
         workingHoursEnd,
         openDays: selectedDays.join(","),
         useResources: useResources.toString(),
+        limitBookingWindow: limitBookingWindow.toString(),
+        bookingWindow: bookingWindow.toString(),
+        limitAppointments: limitAppointments.toString(),
+        maxAppointmentsDisplayed: maxAppointmentsDisplayed.toString(),
       },
       { method: "POST" }
     );
@@ -132,6 +156,10 @@ export default function SettingsPage() {
     setWorkingHoursStart(settings.workingHoursStart);
     setWorkingHoursEnd(settings.workingHoursEnd);
     setUseResources(settings.useResources || false);
+    setLimitBookingWindow(settings.limitBookingWindow || false);
+    setBookingWindow(settings.bookingWindow || 30);
+    setLimitAppointments(settings.limitAppointments || false);
+    setMaxAppointmentsDisplayed(settings.maxAppointmentsDisplayed || 10);
     setSelectedDays(settings.openDays.split(",").map(Number));
   };
 
@@ -191,6 +219,68 @@ export default function SettingsPage() {
                   When enabled, customers will need to select an available resource when booking appointments. Make sure to add resources in the Resources page.
                 </s-text>
               </s-box>
+            )}
+          </s-grid>
+        </s-section>
+
+        <s-section>
+          <s-grid gap="base">
+            <s-text variant="headingMd">Booking Window</s-text>
+            <s-text color="subdued">
+              Control how far in advance customers can book appointments
+            </s-text>
+            
+            <label style={{ display: "flex", alignItems: "center", gap: "8px", cursor: "pointer" }}>
+              <input
+                type="checkbox"
+                checked={limitBookingWindow}
+                onChange={(e) => setLimitBookingWindow(e.target.checked)}
+                style={{ cursor: "pointer" }}
+              />
+              <s-text>Limit booking window</s-text>
+            </label>
+            
+            {limitBookingWindow && (
+              <s-text-field
+                label="Booking window (days)"
+                type="number"
+                value={bookingWindow.toString()}
+                onInput={(e) => setBookingWindow(parseInt(e.currentTarget.value, 10) || 30)}
+                min="1"
+                max="365"
+                helpText="Number of days in advance customers can book appointments"
+              />
+            )}
+          </s-grid>
+        </s-section>
+
+        <s-section>
+          <s-grid gap="base">
+            <s-text variant="headingMd">Appointment Display Limit</s-text>
+            <s-text color="subdued">
+              Control how many appointments are shown to customers
+            </s-text>
+            
+            <label style={{ display: "flex", alignItems: "center", gap: "8px", cursor: "pointer" }}>
+              <input
+                type="checkbox"
+                checked={limitAppointments}
+                onChange={(e) => setLimitAppointments(e.target.checked)}
+                style={{ cursor: "pointer" }}
+              />
+              <s-text>Limit number of displayed appointments</s-text>
+            </label>
+            
+            {limitAppointments && (
+              <s-text-field
+                label="Maximum appointments to display"
+                type="number"
+                value={maxAppointmentsDisplayed.toString()}
+                onInput={(e) => setMaxAppointmentsDisplayed(parseInt(e.currentTarget.value, 10) || 10)}
+                min="1"
+                max="100"
+                helpText="Customers will see a 'More' button to load additional appointments"
+              />
             )}
           </s-grid>
         </s-section>
