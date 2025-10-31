@@ -49,6 +49,8 @@ model Store {
   employees         Employee[] // Relation to employees
   settings          Settings? // Relation to settings
   services          Service[] // Relation to services
+  resources         Resource[] // Relation to resources
+  resourceTypes     ResourceType[] // Relation to resource types
   
   @@index([shop])
   @@index([isActive])
@@ -62,9 +64,8 @@ model Settings {
   store             Store     @relation(fields: [storeId], references: [id], onDelete: Cascade)
   workingHoursStart String    @default("09:00") @db.VarChar(5) // Start time (HH:MM format)
   workingHoursEnd   String    @default("17:00") @db.VarChar(5) // End time (HH:MM format)
-  timeSlotSize      Int       @default(30) // Time slot size in minutes (used when slotType is "fixed")
-  slotType          String    @default("fixed") @db.VarChar(20) // "fixed" or "variable"
   openDays          String    @default("1,2,3,4,5") @db.VarChar(50) // Comma-separated day numbers (0=Sunday, 1=Monday, etc.)
+  useResources      Boolean   @default(false) // Whether to use resources for bookings
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt
   
@@ -108,24 +109,27 @@ model Schedule {
 }
 
 model Service {
-  id                BigInt    @id @default(autoincrement())
-  productId         String    @db.VarChar(255) // Shopify product ID
-  productTitle      String    @db.VarChar(255) // Product title
-  variantId         String?   @db.VarChar(255) // Shopify variant ID (if specific variant)
-  variantTitle      String?   @db.VarChar(255) // Variant title
-  imageUrl          String?   @db.Text // Product or variant image URL
-  duration          Int       // Duration in minutes
-  shop              String    @db.VarChar(255) // Shop domain for quick lookups
-  storeId           BigInt    // Foreign key to Store
-  store             Store     @relation(fields: [storeId], references: [id], onDelete: Cascade)
-  isActive          Boolean   @default(true) // Whether service is active
-  createdAt         DateTime  @default(now())
-  updatedAt         DateTime  @updatedAt
+  id                BigInt       @id @default(autoincrement())
+  productId         String       @db.VarChar(255) // Shopify product ID
+  productTitle      String       @db.VarChar(255) // Product title
+  variantId         String?      @db.VarChar(255) // Shopify variant ID (if specific variant)
+  variantTitle      String?      @db.VarChar(255) // Variant title
+  imageUrl          String?      @db.Text // Product or variant image URL
+  duration          Int          // Duration in minutes
+  shop              String       @db.VarChar(255) // Shop domain for quick lookups
+  storeId           BigInt       // Foreign key to Store
+  store             Store        @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  resourceTypeId    BigInt?      // Optional foreign key to ResourceType
+  resourceType      ResourceType? @relation(fields: [resourceTypeId], references: [id], onDelete: SetNull)
+  isActive          Boolean      @default(true) // Whether service is active
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
   
   @@unique([productId, variantId, shop])
   @@index([shop])
   @@index([storeId])
   @@index([productId])
+  @@index([resourceTypeId])
   @@index([isActive])
 }
 
@@ -148,4 +152,41 @@ model Subscription {
   @@index([subscriptionId])
   @@index([status])
   @@index([createdAt])
+}
+
+model ResourceType {
+  id                BigInt     @id @default(autoincrement())
+  name              String     @db.VarChar(255) // Type name (e.g., "Meeting Rooms", "Equipment")
+  shop              String     @db.VarChar(255) // Shop domain for quick lookups
+  storeId           BigInt     // Foreign key to Store
+  store             Store      @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  resources         Resource[] // Resources of this type
+  services          Service[]  // Services that require this resource type
+  isActive          Boolean    @default(true) // Whether type is active
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
+  
+  @@index([shop])
+  @@index([storeId])
+  @@index([isActive])
+}
+
+model Resource {
+  id                BigInt       @id @default(autoincrement())
+  name              String       @db.VarChar(255) // Resource name (e.g., "Meeting Room A", "Projector")
+  description       String?      @db.Text // Optional description
+  quantity          Int          @default(1) // Number of available units
+  shop              String       @db.VarChar(255) // Shop domain for quick lookups
+  storeId           BigInt       // Foreign key to Store
+  store             Store        @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  resourceTypeId    BigInt       // Foreign key to ResourceType
+  resourceType      ResourceType @relation(fields: [resourceTypeId], references: [id], onDelete: Cascade)
+  isActive          Boolean      @default(true) // Whether resource is active
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+  
+  @@index([shop])
+  @@index([storeId])
+  @@index([resourceTypeId])
+  @@index([isActive])
 }

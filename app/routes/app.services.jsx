@@ -8,20 +8,36 @@ export const loader = async ({ request }) => {
   const { session } = await authenticate.admin(request);
   const shop = session.shop;
 
-  // Get store with services
+  // Get store with services and resource types
   const store = await prisma.store.findUnique({
     where: { shop },
     include: {
       services: {
         where: { isActive: true },
         orderBy: { createdAt: "desc" },
+        include: {
+          resourceType: true,
+        },
+      },
+      resourceTypes: {
+        where: { isActive: true },
+        orderBy: { name: "asc" },
       },
     },
   });
 
+  // Serialize BigInt values
+  const serializeData = (data) => {
+    if (!data) return data;
+    return JSON.parse(JSON.stringify(data, (key, value) =>
+      typeof value === 'bigint' ? value.toString() : value
+    ));
+  };
+
   return { 
-    services: store?.services || [], 
-    storeId: store?.id,
+    services: serializeData(store?.services) || [], 
+    resourceTypes: serializeData(store?.resourceTypes) || [],
+    storeId: store?.id?.toString(),
   };
 };
 
@@ -61,6 +77,7 @@ export const action = async ({ request }) => {
             variantTitle: svc.variantTitle || null,
             imageUrl: svc.imageUrl || null,
             duration: svc.duration,
+            resourceTypeId: svc.resourceTypeId ? BigInt(svc.resourceTypeId) : null,
             shop,
             storeId: store.id,
           },
@@ -98,7 +115,7 @@ export const action = async ({ request }) => {
 };
 
 export default function ServicesPage() {
-  const { services } = useLoaderData();
+  const { services, resourceTypes } = useLoaderData();
   const fetcher = useFetcher();
   const revalidator = useRevalidator();
   const [showForm, setShowForm] = useState(false);
@@ -201,6 +218,7 @@ export default function ServicesPage() {
         onCancel={handleCancel}
         onSubmit={handleCreateService}
         isSubmitting={isSubmitting}
+        resourceTypes={resourceTypes}
       />
     );
   }
@@ -274,7 +292,7 @@ export default function ServicesPage() {
                 {/* Table Header */}
                 <div style={{
                   display: "grid",
-                  gridTemplateColumns: "60px 2fr 1fr 1fr 120px",
+                  gridTemplateColumns: "60px 2fr 1fr 1fr 1fr 120px",
                   gap: "16px",
                   padding: "12px 16px",
                   borderBottom: "2px solid #e1e3e5",
@@ -283,6 +301,7 @@ export default function ServicesPage() {
                   <s-text variant="bodySm" fontWeight="semibold">Image</s-text>
                   <s-text variant="bodySm" fontWeight="semibold">Product</s-text>
                   <s-text variant="bodySm" fontWeight="semibold">Variant</s-text>
+                  <s-text variant="bodySm" fontWeight="semibold">Resource Type</s-text>
                   <s-text variant="bodySm" fontWeight="semibold">Duration</s-text>
                   <s-text variant="bodySm" fontWeight="semibold">Actions</s-text>
                 </div>
@@ -293,7 +312,7 @@ export default function ServicesPage() {
                     key={service.id.toString()}
                     style={{
                       display: "grid",
-                      gridTemplateColumns: "60px 2fr 1fr 1fr 120px",
+                      gridTemplateColumns: "60px 2fr 1fr 1fr 1fr 120px",
                       gap: "16px",
                       padding: "16px",
                       borderBottom: "1px solid #e1e3e5",
@@ -351,6 +370,34 @@ export default function ServicesPage() {
                           fontWeight: "500"
                         }}>
                           Default
+                        </span>
+                      )}
+                    </div>
+
+                    <div>
+                      {service.resourceType ? (
+                        <span style={{
+                          display: "inline-block",
+                          padding: "4px 12px",
+                          backgroundColor: "#e0e7ff",
+                          color: "#4338ca",
+                          borderRadius: "12px",
+                          fontSize: "12px",
+                          fontWeight: "500"
+                        }}>
+                          {service.resourceType.name}
+                        </span>
+                      ) : (
+                        <span style={{
+                          display: "inline-block",
+                          padding: "4px 12px",
+                          backgroundColor: "#f3f4f6",
+                          color: "#6b7280",
+                          borderRadius: "12px",
+                          fontSize: "12px",
+                          fontWeight: "500"
+                        }}>
+                          None
                         </span>
                       )}
                     </div>

@@ -19,7 +19,7 @@ export const loader = async ({ request }) => {
   const startDate = new Date(year, month, 1);
   const endDate = new Date(year, month + 1, 0);
 
-  // Get store with settings and services
+  // Get store with settings, services, and resource types
   const store = await prisma.store.findUnique({
     where: { shop },
     include: {
@@ -31,6 +31,9 @@ export const loader = async ({ request }) => {
       services: {
         where: { isActive: true },
         orderBy: { productTitle: "asc" },
+        include: {
+          resourceType: true,
+        },
       },
     },
   });
@@ -50,9 +53,11 @@ export const loader = async ({ request }) => {
   const settings = store?.settings || {
     workingHoursStart: "09:00",
     workingHoursEnd: "17:00",
-    timeSlotSize: 30,
     openDays: "1,2,3,4,5",
   };
+  
+  // Default slot size for schedule display (15 minutes)
+  const SLOT_SIZE_MINUTES = 15;
 
   return { 
     employees: store?.employees || [], 
@@ -150,6 +155,39 @@ export const action = async ({ request }) => {
     return { success: true, action: "saveSchedule" };
   }
 
+  if (actionType === "duplicateSchedule") {
+    const employeeId = BigInt(formData.get("employeeId"));
+    const targetDates = JSON.parse(formData.get("targetDates"));
+    const slots = JSON.parse(formData.get("slots"));
+
+    // Create or update schedules for all target dates
+    const results = await Promise.all(
+      targetDates.map(dateStr => {
+        const dateTime = new Date(dateStr + 'T00:00:00.000Z');
+        return prisma.schedule.upsert({
+          where: {
+            employeeId_date: {
+              employeeId,
+              date: dateTime,
+            },
+          },
+          update: {
+            slots,
+            updatedAt: new Date(),
+          },
+          create: {
+            employeeId,
+            shop,
+            date: dateTime,
+            slots,
+          },
+        });
+      })
+    );
+
+    return { success: true, action: "duplicateSchedule", count: results.length };
+  }
+
   if (actionType === "deleteSchedule") {
     const scheduleId = formData.get("scheduleId");
 
@@ -167,16 +205,19 @@ export const action = async ({ request }) => {
 
 export default function EmployeePage() {
   const { employees, settings, schedules, services } = useLoaderData();
-  console.log("Services loaded:", services);
   const fetcher = useFetcher();
   const revalidator = useRevalidator();
   const navigate = useNavigate();
   const [selectedEmployee, setSelectedEmployee] = useState(null);
-  const [showModal, setShowModal] = useState(false);
   const [showScheduleModal, setShowScheduleModal] = useState(false);
   const [showServicePicker, setShowServicePicker] = useState(false);
   const [showDeleteServiceModal, setShowDeleteServiceModal] = useState(false);
+  const [showDeleteScheduleModal, setShowDeleteScheduleModal] = useState(false);
+  const [showDuplicateModal, setShowDuplicateModal] = useState(false);
   const [serviceToDelete, setServiceToDelete] = useState(null);
+  const [scheduleToDelete, setScheduleToDelete] = useState(null);
+  const [scheduleToDuplicate, setScheduleToDuplicate] = useState(null);
+  const [selectedDuplicateDays, setSelectedDuplicateDays] = useState([]);
   const [selectedDate, setSelectedDate] = useState(null);
   const [selectedSlots, setSelectedSlots] = useState([]);
   const [selectedServiceIds, setSelectedServiceIds] = useState([]);
@@ -193,6 +234,9 @@ export default function EmployeePage() {
     man: "/avatar-man.svg",
     woman: "/avatar-woman.svg"
   };
+  
+  // Default slot size for schedule display (15 minutes)
+  const SLOT_SIZE_MINUTES = 15;
 
   // Update selected employee when data changes
   useEffect(() => {
@@ -216,7 +260,7 @@ export default function EmployeePage() {
     if (fetcher.state === "idle" && fetcher.data?.success && fetcher.data?.action === "updateServices") {
       revalidator.revalidate();
     }
-  }, [fetcher.state, fetcher.data, revalidator]);
+  }, [fetcher.state, fetcher.data]);
 
   // Helper to find schedule for a specific date and employee
   const getScheduleForDate = (date, employeeId) => {
@@ -229,34 +273,84 @@ export default function EmployeePage() {
   };
 
   // Handle delete schedule
-  const handleDeleteSchedule = (scheduleId, e) => {
+  const handleDeleteSchedule = (schedule, e) => {
     e.stopPropagation();
-    if (confirm("Are you sure you want to delete this schedule?")) {
+    setScheduleToDelete(schedule);
+    setShowDeleteScheduleModal(true);
+  };
+
+  const handleConfirmDeleteSchedule = () => {
+    if (scheduleToDelete) {
       fetcher.submit(
-        { action: "deleteSchedule", scheduleId },
+        { action: "deleteSchedule", scheduleId: scheduleToDelete.id.toString() },
         { method: "POST" }
       );
+      setShowDeleteScheduleModal(false);
+      setScheduleToDelete(null);
     }
   };
 
-  // Handle edit schedule (open modal with existing slots)
-  const handleEditSchedule = (date, schedule, e) => {
+  const handleCancelDeleteSchedule = () => {
+    setShowDeleteScheduleModal(false);
+    setScheduleToDelete(null);
+  };
+
+  // Handle duplicate schedule
+  const handleDuplicateSchedule = (schedule, e) => {
     e.stopPropagation();
-    const allSlots = generateTimeSlots(date);
-    const existingSlots = schedule.slots;
+    setScheduleToDuplicate(schedule);
     
-    // Find indices of existing slots
-    const selectedIndices = [];
-    existingSlots.forEach(existingSlot => {
-      const index = allSlots.findIndex(slot => slot.startTime === existingSlot.startTime);
-      if (index !== -1) {
-        selectedIndices.push(index);
+    // Select all available days by default
+    const availableDays = calendarDays.filter(dayInfo => {
+      if (dayInfo.isEmpty) return false;
+      // Exclude the source day and weekends
+      const sourceDate = new Date(schedule.date).toISOString().split('T')[0];
+      const thisDate = dayInfo.date.toISOString().split('T')[0];
+      if (sourceDate === thisDate) return false;
+      if (dayInfo.isWeekend) return false;
+      // Check if day has time slots available
+      const slots = generateTimeSlots(dayInfo.date);
+      return slots.length > 0;
+    }).map(dayInfo => dayInfo.date.toISOString().split('T')[0]);
+    
+    setSelectedDuplicateDays(availableDays);
+    setShowDuplicateModal(true);
+  };
+
+  const handleToggleDuplicateDay = (date) => {
+    const dateStr = date.toISOString().split('T')[0];
+    setSelectedDuplicateDays(prev => {
+      if (prev.includes(dateStr)) {
+        return prev.filter(d => d !== dateStr);
+      } else {
+        return [...prev, dateStr];
       }
     });
-    
-    setSelectedDate(date);
-    setSelectedSlots(selectedIndices);
-    setShowScheduleModal(true);
+  };
+
+  const handleConfirmDuplicate = () => {
+    if (scheduleToDuplicate && selectedDuplicateDays.length > 0) {
+      // Submit all days in a single request
+      fetcher.submit(
+        {
+          action: "duplicateSchedule",
+          employeeId: selectedEmployee.id.toString(),
+          sourceDateStr: new Date(scheduleToDuplicate.date).toISOString().split('T')[0],
+          targetDates: JSON.stringify(selectedDuplicateDays),
+          slots: JSON.stringify(scheduleToDuplicate.slots),
+        },
+        { method: "POST" }
+      );
+      setShowDuplicateModal(false);
+      setScheduleToDuplicate(null);
+      setSelectedDuplicateDays([]);
+    }
+  };
+
+  const handleCancelDuplicate = () => {
+    setShowDuplicateModal(false);
+    setScheduleToDuplicate(null);
+    setSelectedDuplicateDays([]);
   };
 
   // Watch for fetcher completion and reload data
@@ -269,11 +363,13 @@ export default function EmployeePage() {
         console.log("Success! New employee created:", employeeId);
         lastProcessedEmployeeId.current = employeeId;
         setNewEmployeeName("");
-        setShowModal(false);
+        setSelectedAvatar("man");
+        setAvatarFile(null);
+        setAvatarPreview(null);
         revalidator.revalidate();
       }
     }
-  }, [fetcher.state, fetcher.data, revalidator]);
+  }, [fetcher.state, fetcher.data]);
 
   const isSubmitting = fetcher.state === "submitting";
 
@@ -289,16 +385,12 @@ export default function EmployeePage() {
         },
         { method: "POST" }
       );
+      // Close modal using command
+      const closeBtn = document.querySelector('[commandFor="add-employee-modal"][command="--hide"]');
+      if (closeBtn) closeBtn.click();
     }
   };
 
-  const handleCancel = () => {
-    setNewEmployeeName("");
-    setSelectedAvatar("man");
-    setAvatarFile(null);
-    setAvatarPreview(null);
-    setShowModal(false);
-  };
 
   const handleFileChange = (e) => {
     const file = e.target.files?.[0];
@@ -316,7 +408,6 @@ export default function EmployeePage() {
   const handleOpenServicePicker = () => {
     if (selectedEmployee) {
       // Initialize with employee's current service IDs
-      // Handle both array and Prisma JSON object
       let currentServiceIds = selectedEmployee.serviceIds || [];
       if (typeof currentServiceIds === 'object' && !Array.isArray(currentServiceIds)) {
         currentServiceIds = [];
@@ -411,7 +502,7 @@ export default function EmployeePage() {
     
     const startTimeMinutes = startHour * 60 + startMinute;
     const endTimeMinutes = endHour * 60 + endMinute;
-    const slotSize = settings.timeSlotSize;
+    const slotSize = SLOT_SIZE_MINUTES; // Use constant instead of settings
 
     for (let time = startTimeMinutes; time < endTimeMinutes; time += slotSize) {
       const slotStartHour = Math.floor(time / 60);
@@ -432,7 +523,7 @@ export default function EmployeePage() {
   };
 
   // Handle date click to open schedule modal
-  const handleDateClick = (date) => {
+  const handleDateClick = (date, forceEdit = false) => {
     if (!selectedEmployee) return;
     
     const slots = generateTimeSlots(date);
@@ -441,8 +532,39 @@ export default function EmployeePage() {
       return;
     }
     
+    // Check if there's an existing schedule for this date
+    const existingSchedule = getScheduleForDate(date, selectedEmployee.id);
+    
+    // If schedule exists and not forcing edit, just open edit mode directly
+    if (existingSchedule && !forceEdit) {
+      // Open edit mode with the existing schedule
+      const allSlots = generateTimeSlots(date);
+      const existingSlots = existingSchedule.slots;
+      
+      // Find indices of existing slots
+      const selectedIndices = [];
+      existingSlots.forEach(existingSlot => {
+        const index = allSlots.findIndex(slot => slot.startTime === existingSlot.startTime);
+        if (index !== -1) {
+          selectedIndices.push(index);
+        }
+      });
+      
+      setSelectedDate(date);
+      setSelectedSlots(selectedIndices);
+      setShowScheduleModal(true);
+      return;
+    }
+    
     setSelectedDate(date);
-    setSelectedSlots(slots.map((_, index) => index)); // Select all by default
+    
+    // If schedule exists, load the saved slots, otherwise select all by default
+    if (existingSchedule && existingSchedule.slots) {
+      setSelectedSlots(existingSchedule.slots);
+    } else {
+      setSelectedSlots(slots.map((_, index) => index)); // Select all by default for new schedules
+    }
+    
     setShowScheduleModal(true);
   };
 
@@ -479,19 +601,16 @@ export default function EmployeePage() {
   const goToPreviousMonth = () => {
     const newDate = new Date(currentDate.getFullYear(), currentDate.getMonth() - 1, 1);
     setCurrentDate(newDate);
-    navigate(`?month=${newDate.getMonth()}&year=${newDate.getFullYear()}`);
   };
 
   const goToNextMonth = () => {
     const newDate = new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 1);
     setCurrentDate(newDate);
-    navigate(`?month=${newDate.getMonth()}&year=${newDate.getFullYear()}`);
   };
 
   const goToToday = () => {
-    const newDate = new Date();
-    setCurrentDate(newDate);
-    navigate(`?month=${newDate.getMonth()}&year=${newDate.getFullYear()}`);
+    const today = new Date();
+    setCurrentDate(today);
   };
 
   // Generate calendar days for current month
@@ -533,13 +652,22 @@ export default function EmployeePage() {
 
   return (
     <s-page heading="Employee Schedule">
-      <s-grid gridTemplateColumns="1fr 2fr" gap="base">
-        {/* Employee List Column (1/3 width) */}
-        <s-section>
+      <s-query-container>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 2fr", gap: "16px" }}>
+          {/* Employee List Column (1/3 width on desktop, full width on mobile) */}
+          <div>
+          <div style={{ 
+            backgroundColor: "white", 
+            borderRadius: "12px", 
+            padding: "20px",
+            boxShadow: "0 1px 3px rgba(0, 0, 0, 0.1)",
+            height: "100%",
+            minHeight: "900px"
+          }}>
           <s-grid gap="base">
             <s-grid gridTemplateColumns="1fr auto" alignItems="center">
               <s-heading>Employees</s-heading>
-              <s-button onClick={() => setShowModal(true)} variant="primary">
+              <s-button commandFor="add-employee-modal" command="--show" variant="primary">
                 Add Employee
               </s-button>
             </s-grid>
@@ -605,10 +733,12 @@ export default function EmployeePage() {
               </s-box>
             )}
           </s-grid>
-        </s-section>
+        </div>
+        </div>
 
-        {/* Monthly Schedule and Services Column (2/3 width) */}
-        <s-grid gap="base">
+        {/* Monthly Schedule and Services Column (2/3 width on desktop, full width on mobile) */}
+        <div>
+          <s-grid gap="base">
           {/* Services Provided Section */}
           <s-section>
             <s-grid gap="base">
@@ -652,7 +782,7 @@ export default function EmployeePage() {
                         {/* Table Header */}
                         <div style={{
                           display: "grid",
-                          gridTemplateColumns: "50px 1fr 100px 60px",
+                          gridTemplateColumns: "50px 1fr 120px 100px 60px",
                           gap: "12px",
                           padding: "8px 12px",
                           borderBottom: "2px solid #e1e3e5",
@@ -663,6 +793,7 @@ export default function EmployeePage() {
                         }}>
                           <div>IMAGE</div>
                           <div>SERVICE</div>
+                          <div>RESOURCE TYPE</div>
                           <div>DURATION</div>
                           <div>ACTION</div>
                         </div>
@@ -671,7 +802,7 @@ export default function EmployeePage() {
                         {selectedServices.map(service => (
                           <div key={service.id.toString()} style={{
                             display: "grid",
-                            gridTemplateColumns: "50px 1fr 100px 60px",
+                            gridTemplateColumns: "50px 1fr 120px 100px 60px",
                             gap: "12px",
                             padding: "12px",
                             borderBottom: "1px solid #e1e3e5",
@@ -706,6 +837,33 @@ export default function EmployeePage() {
                                 <div style={{ fontSize: "12px", color: "#6d7175" }}>
                                   {service.variantTitle}
                                 </div>
+                              )}
+                            </div>
+                            <div>
+                              {service.resourceType ? (
+                                <span style={{
+                                  display: "inline-block",
+                                  padding: "4px 8px",
+                                  backgroundColor: "#e0e7ff",
+                                  color: "#4338ca",
+                                  borderRadius: "12px",
+                                  fontSize: "11px",
+                                  fontWeight: "500"
+                                }}>
+                                  {service.resourceType.name}
+                                </span>
+                              ) : (
+                                <span style={{
+                                  display: "inline-block",
+                                  padding: "4px 8px",
+                                  backgroundColor: "#f3f4f6",
+                                  color: "#9ca3af",
+                                  borderRadius: "12px",
+                                  fontSize: "11px",
+                                  fontWeight: "500"
+                                }}>
+                                  None
+                                </span>
                               )}
                             </div>
                             <div style={{ fontSize: "14px" }}>
@@ -819,21 +977,22 @@ export default function EmployeePage() {
                         );
                       }
                       
+                      const hasSchedule = getScheduleForDate(dayInfo.date, selectedEmployee?.id);
+                      
                       return (
-                        <s-box
+                        <div
                           key={dayInfo.key}
-                          padding="small"
-                          border="base"
-                          borderRadius="base"
-                          background={
-                            dayInfo.isToday 
-                              ? "primary" 
-                              : dayInfo.isWeekend 
-                                ? "subdued" 
-                                : "base"
-                          }
-                          minBlockSize="60px"
-                          style={{ cursor: "pointer" }}
+                          style={{ 
+                            cursor: "pointer",
+                            position: "relative",
+                            backgroundColor: hasSchedule 
+                              ? "#a7f3d0" 
+                              : (dayInfo.isToday ? "#e0f2fe" : (dayInfo.isWeekend ? "#f3f4f6" : "#ffffff")),
+                            border: hasSchedule ? "2px solid #10b981" : "1px solid #e5e7eb",
+                            borderRadius: "8px",
+                            padding: "8px",
+                            minHeight: "60px"
+                          }}
                           onClick={() => handleDateClick(dayInfo.date)}
                         >
                           <div style={{ display: "flex", justifyContent: "space-between", height: "100%" }}>
@@ -847,17 +1006,11 @@ export default function EmployeePage() {
                               </s-text>
                               
                               {/* Show slot count if schedule exists */}
-                              {(() => {
-                                const schedule = getScheduleForDate(dayInfo.date, selectedEmployee?.id);
-                                if (schedule) {
-                                  return (
-                                    <s-text variant="bodySm" color="subdued">
-                                      {schedule.slots.length} slots
-                                    </s-text>
-                                  );
-                                }
-                                return null;
-                              })()}
+                              {hasSchedule && (
+                                <s-text variant="bodySm" color={dayInfo.isToday ? "inverse" : "success"} fontWeight="semibold">
+                                  ✓ {hasSchedule.slots.length} slots
+                                </s-text>
+                              )}
                             </s-grid>
                             
                             {/* Show action buttons if schedule exists */}
@@ -886,9 +1039,10 @@ export default function EmployeePage() {
                                       }}
                                       onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "#d1d1d1"}
                                       onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "#f1f1f1"}
-                                      onClick={(e) => handleEditSchedule(dayInfo.date, schedule, e)}
+                                      onClick={(e) => handleDuplicateSchedule(schedule, e)}
+                                      title="Duplicate to other days"
                                     >
-                                      <s-icon type="edit" size="small" />
+                                      <s-icon type="duplicate" size="small" />
                                     </div>
                                     <div
                                       style={{
@@ -904,7 +1058,7 @@ export default function EmployeePage() {
                                       }}
                                       onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "#d1d1d1"}
                                       onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "#f1f1f1"}
-                                      onClick={(e) => handleDeleteSchedule(schedule.id, e)}
+                                      onClick={(e) => handleDeleteSchedule(schedule, e)}
                                     >
                                       <s-icon type="delete" size="small" />
                                     </div>
@@ -914,7 +1068,7 @@ export default function EmployeePage() {
                               return null;
                             })()}
                           </div>
-                        </s-box>
+                        </div>
                       );
                     })}
                   </s-grid>
@@ -938,177 +1092,150 @@ export default function EmployeePage() {
           </s-grid>
         </s-section>
         </s-grid>
-      </s-grid>
+        </div>
+      </div>
+      </s-query-container>
 
       {/* Add Employee Modal */}
-      {showModal && (
-        <>
-          {/* Modal Overlay */}
-          <div
-            style={{
-              position: "fixed",
-              top: 0,
-              left: 0,
-              right: 0,
-              bottom: 0,
-              backgroundColor: "rgba(0, 0, 0, 0.5)",
-              zIndex: 1000,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
+      <s-modal id="add-employee-modal" heading="Add New Employee" size="large">
+        <s-stack gap="base">
+          <s-text-field
+            label="Employee Name"
+            value={newEmployeeName}
+            onInput={(e) => setNewEmployeeName(e.currentTarget.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && newEmployeeName.trim()) {
+                handleAddEmployee();
+              }
             }}
-            onClick={handleCancel}
-          >
-            {/* Modal Content */}
-            <div
-              style={{
-                backgroundColor: "white",
-                borderRadius: "8px",
-                padding: "24px",
-                minWidth: "400px",
-                maxWidth: "500px",
-                boxShadow: "0 4px 12px rgba(0, 0, 0, 0.15)",
-              }}
-              onClick={(e) => e.stopPropagation()}
-            >
-              <s-grid gap="base">
-                <s-heading>Add New Employee</s-heading>
-                
-                <s-text-field
-                  label="Employee Name"
-                  value={newEmployeeName}
-                  onInput={(e) => setNewEmployeeName(e.currentTarget.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' && newEmployeeName.trim()) {
-                      handleAddEmployee();
-                    }
-                  }}
-                  placeholder="Enter employee name"
-                  autoFocus
+            placeholder="Enter employee name"
+            autoFocus
+          />
+
+          {/* Avatar Selection */}
+          <s-box>
+            <s-text variant="bodyMd" fontWeight="semibold" style={{ marginBottom: "8px" }}>
+              Select Avatar
+            </s-text>
+            <div style={{ display: "flex", gap: "12px", marginBottom: "12px" }}>
+              <div
+                onClick={() => setSelectedAvatar("man")}
+                style={{
+                  width: "80px",
+                  height: "80px",
+                  borderRadius: "50%",
+                  border: selectedAvatar === "man" ? "3px solid #2c6ecb" : "2px solid #e1e3e5",
+                  cursor: "pointer",
+                  overflow: "hidden",
+                  transition: "border 0.2s"
+                }}
+              >
+                <img 
+                  src={defaultAvatars.man} 
+                  alt="Man avatar"
+                  style={{ width: "100%", height: "100%", objectFit: "cover" }}
                 />
-
-                {/* Avatar Selection */}
-                <div>
-                  <div style={{ marginBottom: "8px", fontWeight: "600", fontSize: "14px" }}>
-                    Select Avatar
-                  </div>
-                  <div style={{ display: "flex", gap: "12px", marginBottom: "12px" }}>
-                    <div
-                      onClick={() => setSelectedAvatar("man")}
-                      style={{
-                        width: "80px",
-                        height: "80px",
-                        borderRadius: "50%",
-                        border: selectedAvatar === "man" ? "3px solid #2c6ecb" : "2px solid #e1e3e5",
-                        cursor: "pointer",
-                        overflow: "hidden",
-                        transition: "border 0.2s"
-                      }}
-                    >
-                      <img 
-                        src={defaultAvatars.man} 
-                        alt="Man avatar"
-                        style={{ width: "100%", height: "100%", objectFit: "cover" }}
-                      />
-                    </div>
-                    <div
-                      onClick={() => setSelectedAvatar("woman")}
-                      style={{
-                        width: "80px",
-                        height: "80px",
-                        borderRadius: "50%",
-                        border: selectedAvatar === "woman" ? "3px solid #2c6ecb" : "2px solid #e1e3e5",
-                        cursor: "pointer",
-                        overflow: "hidden",
-                        transition: "border 0.2s"
-                      }}
-                    >
-                      <img 
-                        src={defaultAvatars.woman} 
-                        alt="Woman avatar"
-                        style={{ width: "100%", height: "100%", objectFit: "cover" }}
-                      />
-                    </div>
-                  </div>
-                  
-                  <s-text variant="bodySm" color="subdued" style={{ marginBottom: "8px" }}>
-                    Or upload a custom photo:
-                  </s-text>
-                  
-                  <div style={{ display: "flex", gap: "12px", alignItems: "center" }}>
-                    <input
-                      type="file"
-                      accept="image/*"
-                      onChange={handleFileChange}
-                      style={{ display: "none" }}
-                      id="avatar-upload"
-                    />
-                    <label
-                      htmlFor="avatar-upload"
-                      style={{
-                        padding: "8px 16px",
-                        backgroundColor: "#f6f6f7",
-                        border: "1px solid #c9cccf",
-                        borderRadius: "6px",
-                        cursor: "pointer",
-                        fontSize: "14px",
-                        fontWeight: "500"
-                      }}
-                    >
-                      Choose File
-                    </label>
-                    {avatarPreview && (
-                      <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                        <img 
-                          src={avatarPreview} 
-                          alt="Preview"
-                          style={{ 
-                            width: "40px", 
-                            height: "40px", 
-                            borderRadius: "50%", 
-                            objectFit: "cover",
-                            border: "2px solid #e1e3e5"
-                          }}
-                        />
-                        <button
-                          onClick={() => {
-                            setAvatarFile(null);
-                            setAvatarPreview(null);
-                          }}
-                          style={{
-                            padding: "4px 8px",
-                            backgroundColor: "transparent",
-                            border: "1px solid #c9cccf",
-                            borderRadius: "4px",
-                            cursor: "pointer",
-                            fontSize: "12px"
-                          }}
-                        >
-                          Remove
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                <s-stack direction="inline" gap="small" justifyContent="end">
-                  <s-button onClick={handleCancel} variant="tertiary" disabled={isSubmitting}>
-                    Cancel
-                  </s-button>
-                  <s-button 
-                    onClick={handleAddEmployee} 
-                    variant="primary"
-                    disabled={!newEmployeeName.trim() || isSubmitting}
-                    loading={isSubmitting}
-                  >
-                    {isSubmitting ? "Saving..." : "Save"}
-                  </s-button>
-                </s-stack>
-              </s-grid>
+              </div>
+              <div
+                onClick={() => setSelectedAvatar("woman")}
+                style={{
+                  width: "80px",
+                  height: "80px",
+                  borderRadius: "50%",
+                  border: selectedAvatar === "woman" ? "3px solid #2c6ecb" : "2px solid #e1e3e5",
+                  cursor: "pointer",
+                  overflow: "hidden",
+                  transition: "border 0.2s"
+                }}
+              >
+                <img 
+                  src={defaultAvatars.woman} 
+                  alt="Woman avatar"
+                  style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                />
+              </div>
             </div>
-          </div>
-        </>
-      )}
+            
+            <s-text variant="bodySm" color="subdued" style={{ marginBottom: "8px" }}>
+              Or upload a custom photo:
+            </s-text>
+            
+            <div style={{ display: "flex", gap: "12px", alignItems: "center" }}>
+              <input
+                type="file"
+                accept="image/*"
+                onChange={handleFileChange}
+                style={{ display: "none" }}
+                id="avatar-upload"
+              />
+              <label
+                htmlFor="avatar-upload"
+                style={{
+                  padding: "8px 16px",
+                  backgroundColor: "#f6f6f7",
+                  border: "1px solid #c9cccf",
+                  borderRadius: "6px",
+                  cursor: "pointer",
+                  fontSize: "14px",
+                  fontWeight: "500"
+                }}
+              >
+                Choose File
+              </label>
+              {avatarPreview && (
+                <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                  <img 
+                    src={avatarPreview} 
+                    alt="Preview"
+                    style={{ 
+                      width: "40px", 
+                      height: "40px", 
+                      borderRadius: "50%", 
+                      objectFit: "cover",
+                      border: "2px solid #e1e3e5"
+                    }}
+                  />
+                  <button
+                    onClick={() => {
+                      setAvatarFile(null);
+                      setAvatarPreview(null);
+                    }}
+                    style={{
+                      padding: "4px 8px",
+                      backgroundColor: "transparent",
+                      border: "1px solid #c9cccf",
+                      borderRadius: "4px",
+                      cursor: "pointer",
+                      fontSize: "12px"
+                    }}
+                  >
+                    Remove
+                  </button>
+                </div>
+              )}
+            </div>
+          </s-box>
+        </s-stack>
+
+        <s-button 
+          slot="primary-action"
+          onClick={handleAddEmployee} 
+          variant="primary"
+          disabled={!newEmployeeName.trim() || isSubmitting}
+          loading={isSubmitting}
+        >
+          {isSubmitting ? "Saving..." : "Save"}
+        </s-button>
+        <s-button 
+          slot="secondary-actions"
+          commandFor="add-employee-modal" 
+          command="--hide"
+          variant="secondary" 
+          disabled={isSubmitting}
+        >
+          Cancel
+        </s-button>
+      </s-modal>
 
       {/* Schedule Modal */}
       {showScheduleModal && selectedDate && (
@@ -1131,51 +1258,114 @@ export default function EmployeePage() {
             <div
               style={{
                 backgroundColor: "white",
-                borderRadius: "8px",
+                borderRadius: "12px",
                 padding: "24px",
-                minWidth: "500px",
-                maxWidth: "600px",
-                maxHeight: "80vh",
+                minWidth: "600px",
+                maxWidth: "700px",
+                maxHeight: "85vh",
                 overflow: "auto",
-                boxShadow: "0 4px 12px rgba(0, 0, 0, 0.15)",
+                boxShadow: "0 8px 24px rgba(0, 0, 0, 0.15)",
               }}
               onClick={(e) => e.stopPropagation()}
             >
               <s-grid gap="base">
-                <s-heading>
-                  Schedule for {selectedEmployee?.name} - {selectedDate.toLocaleDateString()}
-                </s-heading>
+                <div>
+                  <s-heading>Set Availability</s-heading>
+                  <s-text variant="bodySm" color="subdued">
+                    {selectedEmployee?.name} - {selectedDate.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
+                  </s-text>
+                </div>
                 
-                <s-text color="subdued">
-                  Select the time slots you want to make available
-                </s-text>
+                <div style={{
+                  padding: "16px",
+                  backgroundColor: "#f9fafb",
+                  borderRadius: "8px",
+                  border: "1px solid #e5e7eb"
+                }}>
+                  <s-text variant="bodySm" fontWeight="semibold" style={{ marginBottom: "8px", display: "block" }}>
+                    💡 Quick Tip
+                  </s-text>
+                  <s-text variant="bodySm" color="subdued">
+                    Click on time slots to toggle availability. Selected slots will be highlighted in green.
+                  </s-text>
+                </div>
 
-                <s-grid gap="small" style={{ maxHeight: "400px", overflow: "auto" }}>
-                  {generateTimeSlots(selectedDate).map((slot, index) => (
-                    <s-checkbox
-                      key={index}
-                      checked={selectedSlots.includes(index)}
-                      onChange={() => toggleSlot(index)}
-                      label={`${slot.startTime} - ${slot.endTime}`}
-                    />
-                  ))}
-                </s-grid>
+                <div style={{
+                  display: "grid",
+                  gridTemplateColumns: "repeat(auto-fill, minmax(70px, 1fr))",
+                  gap: "4px",
+                  maxHeight: "450px",
+                  overflow: "auto",
+                  padding: "4px"
+                }}>
+                  {generateTimeSlots(selectedDate).map((slot, index) => {
+                    const isSelected = selectedSlots.includes(index);
+                    return (
+                      <div
+                        key={index}
+                        onClick={() => toggleSlot(index)}
+                        style={{
+                          padding: "6px 4px",
+                          borderRadius: "4px",
+                          border: isSelected ? "1.5px solid #10b981" : "1.5px solid #e5e7eb",
+                          backgroundColor: isSelected ? "#d1fae5" : "#ffffff",
+                          cursor: "pointer",
+                          transition: "all 0.15s ease",
+                          textAlign: "center",
+                          fontWeight: isSelected ? "600" : "500",
+                          fontSize: "11px",
+                          color: isSelected ? "#065f46" : "#374151",
+                          userSelect: "none",
+                          lineHeight: "1.2"
+                        }}
+                        onMouseEnter={(e) => {
+                          if (!isSelected) {
+                            e.currentTarget.style.backgroundColor = "#f3f4f6";
+                            e.currentTarget.style.borderColor = "#d1d5db";
+                          }
+                        }}
+                        onMouseLeave={(e) => {
+                          if (!isSelected) {
+                            e.currentTarget.style.backgroundColor = "#ffffff";
+                            e.currentTarget.style.borderColor = "#e5e7eb";
+                          }
+                        }}
+                      >
+                        <div>{slot.startTime}</div>
+                        <div style={{ fontSize: "9px", opacity: 0.65, marginTop: "1px" }}>
+                          {slot.endTime}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
 
-                <s-stack direction="inline" gap="small" justifyContent="end">
-                  <s-button 
-                    onClick={() => setShowScheduleModal(false)} 
-                    variant="tertiary"
-                  >
-                    Cancel
-                  </s-button>
-                  <s-button 
-                    onClick={handleSaveSchedule} 
-                    variant="primary"
-                    disabled={selectedSlots.length === 0}
-                  >
-                    Save Schedule
-                  </s-button>
-                </s-stack>
+                <div style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  paddingTop: "8px",
+                  borderTop: "1px solid #e5e7eb"
+                }}>
+                  <s-text variant="bodySm" color="subdued">
+                    {selectedSlots.length} slot{selectedSlots.length !== 1 ? 's' : ''} selected
+                  </s-text>
+                  <s-stack direction="inline" gap="small">
+                    <s-button 
+                      onClick={() => setShowScheduleModal(false)} 
+                      variant="tertiary"
+                    >
+                      Cancel
+                    </s-button>
+                    <s-button 
+                      onClick={handleSaveSchedule} 
+                      variant="primary"
+                      disabled={selectedSlots.length === 0}
+                    >
+                      Save Schedule
+                    </s-button>
+                  </s-stack>
+                </div>
               </s-grid>
             </div>
           </div>
@@ -1367,6 +1557,216 @@ export default function EmployeePage() {
                   onClick={handleConfirmDeleteService}
                 >
                   Remove Service
+                </s-button>
+              </div>
+            </s-grid>
+          </div>
+        </div>
+      )}
+
+      {/* Duplicate Schedule Modal */}
+      {showDuplicateModal && scheduleToDuplicate && selectedEmployee && (
+        <div
+          style={{
+            position: "fixed",
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: "rgba(0, 0, 0, 0.5)",
+            zIndex: 1001,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+          }}
+          onClick={handleCancelDuplicate}
+        >
+          <div
+            style={{
+              backgroundColor: "white",
+              borderRadius: "12px",
+              padding: "24px",
+              maxWidth: "600px",
+              width: "90%",
+              maxHeight: "80vh",
+              overflow: "auto",
+              boxShadow: "0 8px 24px rgba(0, 0, 0, 0.15)",
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <s-grid gap="base">
+              <div>
+                <s-heading>Duplicate Schedule</s-heading>
+                <s-text variant="bodySm" color="subdued">
+                  Copy schedule from {new Date(scheduleToDuplicate.date).toLocaleDateString('en-US', { 
+                    month: 'short', 
+                    day: 'numeric' 
+                  })} ({scheduleToDuplicate.slots.length} slots) to other days
+                </s-text>
+              </div>
+
+              <div style={{
+                padding: "12px",
+                backgroundColor: "#f0f9ff",
+                borderRadius: "8px",
+                border: "1px solid #bae6fd"
+              }}>
+                <s-text variant="bodySm">
+                  💡 Select the days you want to copy this schedule to. Only open days (not weekends or closed days) are shown.
+                </s-text>
+              </div>
+
+              <div>
+                <s-text variant="bodyMd" fontWeight="semibold" style={{ marginBottom: "12px", display: "block" }}>
+                  Select Days
+                </s-text>
+                <div style={{
+                  display: "grid",
+                  gridTemplateColumns: "repeat(auto-fill, minmax(120px, 1fr))",
+                  gap: "8px",
+                  maxHeight: "300px",
+                  overflow: "auto"
+                }}>
+                  {calendarDays.filter(dayInfo => {
+                    if (dayInfo.isEmpty) return false;
+                    // Exclude the source day and weekends
+                    const sourceDate = new Date(scheduleToDuplicate.date).toISOString().split('T')[0];
+                    const thisDate = dayInfo.date.toISOString().split('T')[0];
+                    if (sourceDate === thisDate) return false;
+                    if (dayInfo.isWeekend) return false;
+                    // Check if day has time slots available
+                    const slots = generateTimeSlots(dayInfo.date);
+                    return slots.length > 0;
+                  }).map((dayInfo) => {
+                    const dateStr = dayInfo.date.toISOString().split('T')[0];
+                    const isSelected = selectedDuplicateDays.includes(dateStr);
+                    const hasExistingSchedule = getScheduleForDate(dayInfo.date, selectedEmployee?.id);
+                    
+                    return (
+                      <div
+                        key={dayInfo.key}
+                        onClick={() => handleToggleDuplicateDay(dayInfo.date)}
+                        style={{
+                          padding: "10px",
+                          borderRadius: "6px",
+                          border: isSelected ? "2px solid #3b82f6" : "2px solid #e5e7eb",
+                          backgroundColor: isSelected ? "#dbeafe" : "#ffffff",
+                          cursor: "pointer",
+                          transition: "all 0.2s ease",
+                          textAlign: "center",
+                          position: "relative"
+                        }}
+                      >
+                        <div style={{ 
+                          fontWeight: isSelected ? "600" : "500",
+                          fontSize: "13px",
+                          color: isSelected ? "#1e40af" : "#374151"
+                        }}>
+                          {dayInfo.date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                        </div>
+                        {hasExistingSchedule && (
+                          <div style={{ 
+                            fontSize: "10px", 
+                            color: "#ef4444",
+                            marginTop: "2px"
+                          }}>
+                            Will replace
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                paddingTop: "8px",
+                borderTop: "1px solid #e5e7eb"
+              }}>
+                <s-text variant="bodySm" color="subdued">
+                  {selectedDuplicateDays.length} day{selectedDuplicateDays.length !== 1 ? 's' : ''} selected
+                </s-text>
+                <s-stack direction="inline" gap="small">
+                  <s-button onClick={handleCancelDuplicate}>
+                    Cancel
+                  </s-button>
+                  <s-button 
+                    variant="primary"
+                    onClick={handleConfirmDuplicate}
+                    disabled={selectedDuplicateDays.length === 0}
+                  >
+                    Duplicate Schedule
+                  </s-button>
+                </s-stack>
+              </div>
+            </s-grid>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Schedule Confirmation Modal */}
+      {showDeleteScheduleModal && scheduleToDelete && selectedEmployee && (
+        <div
+          style={{
+            position: "fixed",
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: "rgba(0, 0, 0, 0.5)",
+            zIndex: 1001,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+          }}
+          onClick={handleCancelDeleteSchedule}
+        >
+          <div
+            style={{
+              backgroundColor: "white",
+              borderRadius: "12px",
+              padding: "24px",
+              maxWidth: "450px",
+              width: "90%",
+              boxShadow: "0 4px 12px rgba(0, 0, 0, 0.15)"
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <s-grid gap="base">
+              <s-text variant="headingMd">Delete Schedule</s-text>
+              
+              <s-text variant="bodyMd">
+                Are you sure you want to delete the schedule for {selectedEmployee.name} on{" "}
+                {new Date(scheduleToDelete.date).toLocaleDateString('en-US', { 
+                  weekday: 'long', 
+                  year: 'numeric', 
+                  month: 'long', 
+                  day: 'numeric' 
+                })}?
+              </s-text>
+              
+              <div style={{
+                padding: "12px",
+                backgroundColor: "#fef2f2",
+                borderRadius: "8px",
+                border: "1px solid #fecaca"
+              }}>
+                <s-text variant="bodySm" color="critical">
+                  ⚠️ This will remove {scheduleToDelete.slots.length} time slot{scheduleToDelete.slots.length !== 1 ? 's' : ''} from this day.
+                </s-text>
+              </div>
+
+              <div style={{ display: "flex", gap: "12px", justifyContent: "flex-end" }}>
+                <s-button onClick={handleCancelDeleteSchedule}>Cancel</s-button>
+                <s-button
+                  variant="primary"
+                  tone="critical"
+                  onClick={handleConfirmDeleteSchedule}
+                >
+                  Delete Schedule
                 </s-button>
               </div>
             </s-grid>

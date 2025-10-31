@@ -19,8 +19,8 @@ export const loader = async ({ request }) => {
   const settings = store?.settings || {
     workingHoursStart: "09:00",
     workingHoursEnd: "17:00",
-    timeSlotSize: 30,
     openDays: "1,2,3,4,5",
+    useResources: false,
   };
 
   return { settings, hasSettings: !!store?.settings };
@@ -33,11 +33,10 @@ export const action = async ({ request }) => {
   const formData = await request.formData();
   const workingHoursStart = formData.get("workingHoursStart");
   const workingHoursEnd = formData.get("workingHoursEnd");
-  const timeSlotSize = parseInt(formData.get("timeSlotSize"));
-  const slotType = formData.get("slotType");
   const openDays = formData.get("openDays");
+  const useResources = formData.get("useResources") === "true";
 
-  console.log("Saving settings:", { workingHoursStart, workingHoursEnd, timeSlotSize, slotType, openDays });
+  console.log("Saving settings:", { workingHoursStart, workingHoursEnd, openDays, useResources });
 
   // Get or create store
   let store = await prisma.store.findUnique({
@@ -59,9 +58,8 @@ export const action = async ({ request }) => {
     update: {
       workingHoursStart: workingHoursStart.toString(),
       workingHoursEnd: workingHoursEnd.toString(),
-      timeSlotSize,
-      slotType: slotType.toString(),
       openDays: openDays.toString(),
+      useResources,
       updatedAt: new Date(),
     },
     create: {
@@ -69,9 +67,8 @@ export const action = async ({ request }) => {
       storeId: store.id,
       workingHoursStart: workingHoursStart.toString(),
       workingHoursEnd: workingHoursEnd.toString(),
-      timeSlotSize,
-      slotType: slotType.toString(),
       openDays: openDays.toString(),
+      useResources,
     },
   });
 
@@ -84,8 +81,7 @@ export default function SettingsPage() {
 
   const [workingHoursStart, setWorkingHoursStart] = useState(settings.workingHoursStart);
   const [workingHoursEnd, setWorkingHoursEnd] = useState(settings.workingHoursEnd);
-  const [timeSlotSize, setTimeSlotSize] = useState(settings.timeSlotSize);
-  const [slotType, setSlotType] = useState(settings.slotType || "fixed");
+  const [useResources, setUseResources] = useState(settings.useResources || false);
   const [selectedDays, setSelectedDays] = useState(
     settings.openDays.split(",").map(Number)
   );
@@ -111,13 +107,6 @@ export default function SettingsPage() {
     { value: 6, label: "Saturday" },
   ];
 
-  const timeSlotOptions = [
-    { value: 15, label: "15 minutes" },
-    { value: 30, label: "30 minutes" },
-    { value: 45, label: "45 minutes" },
-    { value: 60, label: "1 hour" },
-  ];
-
   const toggleDay = (dayValue) => {
     if (selectedDays.includes(dayValue)) {
       setSelectedDays(selectedDays.filter((d) => d !== dayValue));
@@ -132,9 +121,8 @@ export default function SettingsPage() {
       {
         workingHoursStart,
         workingHoursEnd,
-        timeSlotSize: timeSlotSize.toString(),
-        slotType,
         openDays: selectedDays.join(","),
+        useResources: useResources.toString(),
       },
       { method: "POST" }
     );
@@ -143,8 +131,7 @@ export default function SettingsPage() {
   const handleReset = () => {
     setWorkingHoursStart(settings.workingHoursStart);
     setWorkingHoursEnd(settings.workingHoursEnd);
-    setTimeSlotSize(settings.timeSlotSize);
-    setSlotType(settings.slotType || "fixed");
+    setUseResources(settings.useResources || false);
     setSelectedDays(settings.openDays.split(",").map(Number));
   };
 
@@ -183,65 +170,28 @@ export default function SettingsPage() {
 
         <s-section>
           <s-grid gap="base">
-            <s-text variant="headingMd">Time Slot Configuration</s-text>
+            <s-text variant="headingMd">Resource Management</s-text>
             <s-text color="subdued">
-              Configure how appointment slots are managed
+              Enable resource allocation for appointments
             </s-text>
             
-            <s-grid gap="base">
-              <s-grid gap="small">
-                <s-text variant="bodyMd" fontWeight="medium">Slot Type</s-text>
-                <label style={{ display: "flex", alignItems: "center", gap: "8px", cursor: "pointer" }}>
-                  <input
-                    type="radio"
-                    name="slotType"
-                    value="fixed"
-                    checked={slotType === "fixed"}
-                    onChange={(e) => setSlotType(e.target.value)}
-                    style={{ cursor: "pointer" }}
-                  />
-                  <s-text>Fixed - Same duration for all appointments</s-text>
-                </label>
-                <label style={{ display: "flex", alignItems: "center", gap: "8px", cursor: "pointer" }}>
-                  <input
-                    type="radio"
-                    name="slotType"
-                    value="variable"
-                    checked={slotType === "variable"}
-                    onChange={(e) => setSlotType(e.target.value)}
-                    style={{ cursor: "pointer" }}
-                  />
-                  <s-text>Variable - Duration depends on service</s-text>
-                </label>
-              </s-grid>
-
-              {slotType === "fixed" && (
-                <div>
-                  <label style={{ display: "block", marginBottom: "8px", fontSize: "14px", fontWeight: "500" }}>
-                    Slot Duration
-                  </label>
-                  <select
-                    value={timeSlotSize}
-                    onChange={(e) => setTimeSlotSize(parseInt(e.target.value))}
-                    style={{
-                      width: "100%",
-                      padding: "8px 12px",
-                      fontSize: "14px",
-                      border: "1px solid #c4cdd5",
-                      borderRadius: "4px",
-                      backgroundColor: "white",
-                      cursor: "pointer",
-                    }}
-                  >
-                    {timeSlotOptions.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              )}
-            </s-grid>
+            <label style={{ display: "flex", alignItems: "center", gap: "8px", cursor: "pointer" }}>
+              <input
+                type="checkbox"
+                checked={useResources}
+                onChange={(e) => setUseResources(e.target.checked)}
+                style={{ cursor: "pointer" }}
+              />
+              <s-text>Use Resources - Require resource allocation for bookings</s-text>
+            </label>
+            
+            {useResources && (
+              <s-box padding="base" background="subdued" borderRadius="base">
+                <s-text variant="bodySm" color="subdued">
+                  When enabled, customers will need to select an available resource when booking appointments. Make sure to add resources in the Resources page.
+                </s-text>
+              </s-box>
+            )}
           </s-grid>
         </s-section>
 

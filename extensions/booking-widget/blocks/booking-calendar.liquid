@@ -1,0 +1,289 @@
+{% schema %}
+{
+  "name": "Booking Calendar",
+  "target": "section",
+  "settings": [
+    {
+      "type": "paragraph",
+      "content": "This block displays the booking calendar for products configured as services in the Time Grid app."
+    },
+    {
+      "type": "text",
+      "id": "app_url",
+      "label": "App URL",
+      "default": "https://your-app-url.com",
+      "info": "Enter your Time Grid app URL (from shopify app dev)"
+    }
+  ]
+}
+{% endschema %}
+
+<div id="timegrid-booking-widget-{{ product.id }}" class="timegrid-app-block">
+  <div class="timegrid-loading">Loading booking calendar...</div>
+</div>
+
+<script>
+  (function() {
+    const productId = '{{ product.id }}';
+    const shop = '{{ shop.permanent_domain }}';
+    const appUrl = '{{ block.settings.app_url }}';
+    const container = document.getElementById('timegrid-booking-widget-{{ product.id }}');
+    
+    if (!productId) {
+      container.innerHTML = '<p>Booking calendar is only available on product pages.</p>';
+      return;
+    }
+
+    // Check if app URL is configured
+    if (!appUrl || appUrl === 'https://your-app-url.com' || appUrl.includes('your-app-url')) {
+      container.innerHTML = `
+        <div style="padding: 20px; background: #fff3cd; border: 1px solid #ffc107; border-radius: 8px; color: #856404;">
+          <strong>⚠️ Configuration Required</strong>
+          <p style="margin: 8px 0 0 0;">Please configure the App URL in the theme editor settings for this block.</p>
+          <p style="margin: 8px 0 0 0; font-size: 13px;">Get your app URL from the Shopify CLI output when running <code>shopify app dev</code></p>
+        </div>
+      `;
+      return;
+    }
+
+    // Check if product is a service
+    console.log('[Widget] Checking if product is a service...', { productId, shop, appUrl });
+    
+    fetch(`${appUrl}/api/check-service?productId=${productId}&shop=${shop}`)
+      .then(response => {
+        console.log('[Widget] check-service response status:', response.status);
+        return response.json();
+      })
+      .then(data => {
+        console.log('[Widget] check-service response data:', data);
+        
+        if (!data.isService) {
+          console.log('[Widget] Product is not a service');
+          container.innerHTML = '<p style="color: #6d7175;">This product is not available for booking.</p>';
+          return;
+        }
+        
+        console.log('[Widget] Product IS a service, loading widget...', {
+          serviceId: data.serviceId,
+          duration: data.duration,
+          title: data.title
+        });
+        
+        // Load the booking widget
+        loadBookingWidget(data.serviceId, data.duration, data.title);
+      })
+      .catch(error => {
+        console.error('[Widget] Error checking service:', error);
+        container.innerHTML = '<p style="color: #c72e2e;">Unable to load booking calendar.</p>';
+      });
+
+    function loadBookingWidget(serviceId, duration, title) {
+      const today = new Date();
+      const dateStr = formatDate(today);
+      
+      container.innerHTML = `
+        <div class="timegrid-widget">
+          <h3>Book an Appointment</h3>
+          <p class="timegrid-service-title">${title} (${duration} min)</p>
+          
+          <div class="timegrid-date-picker">
+            <button onclick="changeDate(-1)" class="timegrid-btn">← Previous</button>
+            <input type="date" id="timegrid-date-${productId}" value="${dateStr}" min="${dateStr}" onchange="loadAvailabilities()">
+            <button onclick="changeDate(1)" class="timegrid-btn">Next →</button>
+          </div>
+
+          <div id="timegrid-content-${productId}">
+            <div class="timegrid-loading">Loading available time slots...</div>
+          </div>
+        </div>
+      `;
+
+      window.changeDate = function(days) {
+        const input = document.getElementById('timegrid-date-${productId}');
+        const current = new Date(input.value);
+        current.setDate(current.getDate() + days);
+        input.value = formatDate(current);
+        loadAvailabilities();
+      };
+
+      window.loadAvailabilities = function() {
+        const dateInput = document.getElementById('timegrid-date-${productId}');
+        const content = document.getElementById('timegrid-content-${productId}');
+        
+        if (!dateInput || !content) {
+          console.error('[Widget] DOM elements not found');
+          return;
+        }
+        
+        const date = dateInput.value;
+        content.innerHTML = '<div class="timegrid-loading">Loading...</div>';
+
+        console.log('[Widget] Loading availabilities...', { serviceId, date, appUrl });
+
+        fetch(`${appUrl}/api/availabilities?serviceId=${serviceId}&date=${date}`)
+          .then(response => {
+            console.log('[Widget] availabilities response status:', response.status);
+            return response.json();
+          })
+          .then(data => {
+            console.log('[Widget] availabilities response data:', data);
+            
+            if (data.error) {
+              console.log('[Widget] Error in response:', data.error);
+              content.innerHTML = `<div class="timegrid-error">${data.error}</div>`;
+              return;
+            }
+
+            if (data.message || !data.availabilities || data.availabilities.length === 0) {
+              console.log('[Widget] No availabilities:', data.message || 'Empty array');
+              content.innerHTML = `<div class="timegrid-empty">${data.message || 'No available time slots for this date.'}</div>`;
+              return;
+            }
+
+            console.log('[Widget] Found availabilities:', data.availabilities.length);
+
+            const slotsHTML = data.availabilities.map(slot => `
+              <div class="timegrid-slot" onclick="selectSlot('${slot.startTime}', '${slot.endTime}')">
+                <div>
+                  <div class="timegrid-slot-time">${slot.startTime} - ${slot.endTime}</div>
+                  ${slot.employees && slot.employees.length > 0 ? 
+                    `<div class="timegrid-slot-staff">Staff: ${slot.employees.map(e => e.name).join(', ')}</div>` 
+                    : ''}
+                </div>
+                <div class="timegrid-slot-badge">Available</div>
+              </div>
+            `).join('');
+
+            content.innerHTML = `
+              <div class="timegrid-count">${data.availabilities.length} time slot(s) available</div>
+              <div class="timegrid-slots">${slotsHTML}</div>
+            `;
+          })
+          .catch(error => {
+            console.error('[Widget] Error loading availabilities:', error);
+            content.innerHTML = '<div class="timegrid-error">Failed to load availabilities.</div>';
+          });
+      };
+
+      window.selectSlot = function(startTime, endTime) {
+        const dateInput = document.getElementById('timegrid-date-${productId}');
+        const date = dateInput ? dateInput.value : '';
+        console.log('[Widget] Slot selected:', { date, startTime, endTime });
+        alert(`You selected: ${date} at ${startTime} - ${endTime}\\n\\nBooking functionality coming soon!`);
+      };
+
+      // Wait for DOM to be ready before loading availabilities
+      setTimeout(() => {
+        console.log('[Widget] DOM ready, loading availabilities...');
+        loadAvailabilities();
+      }, 100);
+    }
+
+    function formatDate(date) {
+      const year = date.getFullYear();
+      const month = String(date.getMonth() + 1).padStart(2, '0');
+      const day = String(date.getDate()).padStart(2, '0');
+      return `${year}-${month}-${day}`;
+    }
+  })();
+</script>
+
+<style>
+  .timegrid-app-block {
+    margin: 20px 0;
+  }
+  .timegrid-widget {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    max-width: 600px;
+    padding: 20px;
+    border: 1px solid #e1e3e5;
+    border-radius: 8px;
+    background: #fff;
+  }
+  .timegrid-widget h3 {
+    margin: 0 0 8px 0;
+    font-size: 20px;
+    font-weight: 600;
+  }
+  .timegrid-service-title {
+    color: #6d7175;
+    font-size: 14px;
+    margin: 0 0 16px 0;
+  }
+  .timegrid-date-picker {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 16px;
+  }
+  .timegrid-btn {
+    padding: 8px 16px;
+    border: 1px solid #c4cdd5;
+    border-radius: 4px;
+    background: #fff;
+    cursor: pointer;
+    font-size: 14px;
+  }
+  .timegrid-btn:hover {
+    background: #f6f6f7;
+  }
+  .timegrid-date-picker input {
+    flex: 1;
+    padding: 8px 12px;
+    border: 1px solid #c4cdd5;
+    border-radius: 4px;
+    font-size: 14px;
+  }
+  .timegrid-loading,
+  .timegrid-empty,
+  .timegrid-error {
+    text-align: center;
+    padding: 20px;
+    color: #6d7175;
+  }
+  .timegrid-error {
+    background: #fef1f1;
+    border: 1px solid #fda29b;
+    border-radius: 4px;
+    color: #c72e2e;
+  }
+  .timegrid-count {
+    font-size: 14px;
+    color: #6d7175;
+    margin-bottom: 12px;
+  }
+  .timegrid-slots {
+    display: grid;
+    gap: 8px;
+  }
+  .timegrid-slot {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 16px;
+    border: 1px solid #e1e3e5;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+  .timegrid-slot:hover {
+    border-color: #2c6ecb;
+    background: #f6f8fa;
+  }
+  .timegrid-slot-time {
+    font-weight: 600;
+    font-size: 16px;
+  }
+  .timegrid-slot-staff {
+    font-size: 13px;
+    color: #6d7175;
+    margin-top: 4px;
+  }
+  .timegrid-slot-badge {
+    padding: 4px 12px;
+    background: #e3f2e9;
+    color: #108043;
+    border-radius: 12px;
+    font-size: 12px;
+    font-weight: 500;
+  }
+</style>

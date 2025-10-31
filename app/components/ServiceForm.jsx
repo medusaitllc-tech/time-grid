@@ -1,11 +1,12 @@
 import { useState } from "react";
 import { useAppBridge } from "@shopify/app-bridge-react";
 
-export default function ServiceForm({ onCancel, onSubmit, isSubmitting }) {
+export default function ServiceForm({ onCancel, onSubmit, isSubmitting, resourceTypes = [] }) {
   const shopify = useAppBridge();
   const [selectedProduct, setSelectedProduct] = useState(null);
   const [variants, setVariants] = useState([]);
   const [defaultDuration, setDefaultDuration] = useState(30);
+  const [selectedResourceType, setSelectedResourceType] = useState("");
 
   const handleOpenProductPicker = async () => {
     const selection = await shopify.resourcePicker({ type: 'product' });
@@ -45,32 +46,45 @@ export default function ServiceForm({ onCancel, onSubmit, isSubmitting }) {
     );
   };
 
+  // Extract numeric ID from Shopify GID format
+  const extractNumericId = (gid) => {
+    // GID format: gid://shopify/Product/8444945268933
+    // Extract: 8444945268933
+    if (gid && gid.includes('gid://')) {
+      return gid.split('/').pop();
+    }
+    return gid;
+  };
+
   const handleSubmit = () => {
     if (!selectedProduct) return;
 
     const servicesToCreate = [];
+    const resourceTypeId = selectedResourceType || null;
 
     if (variants.length > 0) {
       // Create service for each variant
       variants.forEach((variant) => {
         servicesToCreate.push({
-          productId: selectedProduct.id,
+          productId: extractNumericId(selectedProduct.id), // Store numeric ID only
           productTitle: selectedProduct.title,
-          variantId: variant.id,
+          variantId: extractNumericId(variant.id), // Store numeric ID only
           variantTitle: variant.title,
           imageUrl: variant.image || selectedProduct.images?.[0]?.originalSrc || null,
           duration: variant.duration,
+          resourceTypeId,
         });
       });
     } else {
       // Create single service for product
       servicesToCreate.push({
-        productId: selectedProduct.id,
+        productId: extractNumericId(selectedProduct.id), // Store numeric ID only
         productTitle: selectedProduct.title,
         variantId: null,
         variantTitle: null,
         imageUrl: selectedProduct.images?.[0]?.originalSrc || null,
         duration: defaultDuration,
+        resourceTypeId,
       });
     }
 
@@ -141,6 +155,36 @@ export default function ServiceForm({ onCancel, onSubmit, isSubmitting }) {
                   </s-button>
                 </div>
               </div>
+            </s-grid>
+          </s-section>
+
+          {/* Resource Type Section */}
+          <s-section>
+            <s-grid gap="base">
+              <s-text variant="headingMd">Required Resource Type (Optional)</s-text>
+              <s-text variant="bodySm" color="subdued">
+                Select a resource type if this service requires a specific resource
+              </s-text>
+              {resourceTypes && resourceTypes.length > 0 ? (
+                <s-select
+                  label="Resource Type"
+                  value={selectedResourceType}
+                  onChange={(e) => setSelectedResourceType(e.target.value)}
+                >
+                  <s-option value="">None</s-option>
+                  {resourceTypes.map(rt => (
+                    <s-option key={rt.id} value={rt.id}>
+                      {rt.name}
+                    </s-option>
+                  ))}
+                </s-select>
+              ) : (
+                <s-banner tone="info">
+                  <s-text variant="bodySm">
+                    No resource types available. Create resource types on the Resources page first if you want to assign them to services.
+                  </s-text>
+                </s-banner>
+              )}
             </s-grid>
           </s-section>
 
